@@ -1,0 +1,31 @@
+download_JGI_py3k.py - python3 script to download files from the Dept. of Energy JGI website based on project id
+==========================================================
+fasta_reverse_complement.py - simple script to reverse complement the sequences in a multifasta file using BioPython
+==========================================================
+gbk2faa.py - pulls out the amino acid sequences for the records in a GenBank file
+==========================================================
+gbk_get_entry_by_locusid.py - gets information from a GenBank file for a given list of locus ids
+==========================================================
+get_files_from_JGI.py - ?? python2 version that is very limited compared to the py3k version but this would serve as an expansion point if the need arises for a py2 version
+==========================================================
+heatmapper3k.py - ?? beginnings of a python heatmap wrapper. Not complete, never will be unless need arises
+==========================================================
+hist_of_contig_sizes.py - makes a histogram of contig sizes in a FASTA file. Currently represents that as text
+==========================================================
+interproscanner.py - wrapper for doing things with interproscan, has some things hardcoded so isn't robust
+==========================================================
+isolate_hmmer_count.py - counts the number of times each gene is found in a HMM database
+==========================================================
+kmer_cluster.py - ?? incomplete script that has partial methods to cluster sequences by kmer profile, never could decide on a method I wanted to use
+==========================================================
+lucidBLAST/ - a directory for a package that helps to view BLAST results (in XML form) as a figure. Especially used to see duplicate regions on contigs.
+==========================================================
+mypyli/ - a directory for my personal python library (MY PYthon LIbrary) of bioinformatics, several scripts use modules from this library
+==========================================================
+parse_checkm_output.py - script to parse CheckM's output. This should be incorporated into mypyli and updated to use TaxTree
+==========================================================
+run_checkm_by_taxonomy.py - runs CheckM for a group of FASTA files using taxonomy parsed from GenBank files
+==========================================================
+run_parallel_blast.py - runs a BLAST search in parallel with the query split across multiple compute nodes and then reassembles the results to look like it came from a single search
+samtools_X2M.py - converts 'new-style' cigar strings (using X and =) to 'old-style' cigar strings (using M)
+==========================================================

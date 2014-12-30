@@ -1,0 +1,3 @@
+#SeqID	Length	Prediction
+gi|81230333|ref|NC_007595.1|	46366	Plasmid
+gi|81298811|ref|NC_007604.1|	2695903	Chromosome

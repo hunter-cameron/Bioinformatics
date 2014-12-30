@@ -1,0 +1,40 @@
+add_length_to_header.pl - from a FASTA file adds the length of all sequences to their headers
+==========================================================
+automated_functional_analysis.pl - INCOMPLETE|DISCONTINUED, concept script to look up genes in esearch
+==========================================================
+bin_blast.pl - Perl version of parallel BLAST with command substitution; not sure if it works
+==========================================================
+bioperl_genbank_parse.pl - basically just a scaffold of how to use BioPerl to parse a GenBank file
+==========================================================
+blast_alignment_stats.pl - ?? gets some useful stats from a blast search like how many targets it hits, etc.
+==========================================================
+chromosome_reversal_forked.pl - ?? script used to detect plasmid by blasting contigs against database, things with good hits are chromosomal
+==========================================================
+coverage_pipeline.pl - generates the datafile for the genome coverage database
+==========================================================
+Directory_obj.pm - a module for working with directories used by some of the other scripts
+==========================================================
+driver_coverage_pipeline.pl - ?? Not sure how this is different from coverage_pipeline.pl but I don't want to delete it in case
+==========================================================
+genabank_get_hypothetical_seqs.pl - makes a FASTA file of sequences that annotated as hypothetical in a GenBank
+==========================================================
+get_coverage_per_gene.pl - ?? like coverage_pipeline.pl but for genes
+==========================================================
+mummer_dotplot_from_fasta.pl - makes dotplots of FASTA files (pairwise)
+==========================================================
+parallel_blast.pm - module to substitute BLAST command and run on multiple nodes
+==========================================================
+parallelize_blast.pm - module to substitute BLAST command and run on multiple forks using the fork() function
+==========================================================
+plasgraph/ - directory containing an early suite of scripts I wrote to look for plasmids
+==========================================================
+PlasmidFinder/ - directory containing another novice suite of scripts to look for plasmids
+==========================================================
+plasmid_finder.pl - ?? script to use a variety of metrics to try to identify plasmids
+==========================================================
+plot_coverage.pl - ?? not really sure what this is or if it works but it looks like a good bit of work went into it so I don't want to delete it
+==========================================================
+retrieve_raw_reads.pl - ?? precursor to the python download JGI script, keeping it because this has thread options (that didn't work but might be fixable)
+==========================================================
+SequenceMapper/ - messy directory of perl objects for whatever SequenceMapper was. Contains several examples of OO perl development
+==========================================================
