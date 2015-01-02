@@ -89,13 +89,18 @@ name="$(basename $out)"
 dir=${out/$name/}
 
 # make the directory structure if needed
+if [ -z "$dir" ]; then
+    echo "Output directory is null, using: $(pwd)"
+    dir=$(pwd)
+fi
+
 if [ ! -d $dir ]; then
     echo "Making output directory structure\n   mkdir -p $dir"
     mkdir -p $dir
 fi
 
 # map the reads, option for paried only or paired and single
-if [ single == '' ]; then
+if [ $single == '' ]; then
 
     bowtie2 --end-to-end --sensitive --phred33 --threads $threads --seed 20140418 -x $indx -1 $fwd -2 $rev -S $out
 

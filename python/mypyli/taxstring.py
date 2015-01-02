@@ -21,7 +21,7 @@ class TaxString(object):
     
 
     @classmethod
-    def _tax_string_to_tax_dict(cls, tax, email='hjcamero@live.unc.edu'):
+    def _tax_string_to_tax_dict(cls, tax, email):
         
         # if tax is a full/partial string, get only lowest element
         if ";" in tax:
@@ -209,7 +209,7 @@ class TaxString(object):
             return "Never"
 
 
-    def __init__(self, tax="", is_id=False, name="", lookup=False):
+    def __init__(self, tax="", is_id=False, name="", lookup=False, email=''):
     
 
 
