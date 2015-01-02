@@ -1,6 +1,7 @@
 
 
 import sys
+import argparse
 from mypyli import taxstring, taxtree
 
 class TaxNode(object):
@@ -156,7 +157,6 @@ def get_parents_for_ids(nodes_f, data_dict):
 
             data_dict[id].update({'parent': parent, 'rank': rank})
 
-
 def add_nodes_recurs(to_add, parent2child, data_dict, tree):
     next_add = []
     for parent in to_add:
@@ -198,10 +198,17 @@ def build_tree(data_dict):
 
 if __name__ == "__main__":
     
-    data_dict = get_names_for_ids(sys.argv[1])
+    parser = argparse.ArgumentParser(description="Builds a TaxTree from the NCBI taxonomy names.dmp and nodes.dmp files.")
+    parser.add_arugment("-names", help="NCBI taxonomy names.dmp file", required=True)
+    parser.add_argument("-nodes", help="NCBI taxonomy nodes.dmp file", required=True)
+    parser.add_argument("-out", help="filename for pickled output file", default="TaxTree.pickle")
+    args = parser.parse_args()
 
-    get_parents_for_ids(sys.argv[2], data_dict)
+
+    data_dict = get_names_for_ids(args.names)
+
+    get_parents_for_ids(args.nodes, data_dict)
 
     tree = build_tree(data_dict)
     
-    tree.save_tree("tree.pickle")
+    tree.save_tree(args.out)

@@ -1,11 +1,8 @@
+README
 mypyli/__init__.py
-mypyli/build_datafile_for_taxstring.py
 mypyli/fast_build.datafile.py
 mypyli/genbank.py
 mypyli/kraken.py
-mypyli/new_new_build_datafile.py
-mypyli/old_build_datafile.py
-mypyli/parents.py
 mypyli/samparser.py
 mypyli/setup.py
 mypyli/taxstring.py

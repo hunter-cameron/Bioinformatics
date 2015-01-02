@@ -8,6 +8,10 @@
 
 set -eu -o pipefail      # exit at any non-0 return, unset variables, pipe fails
 
+# add the GSL library
+export LD_LIBRARY_PATH=/proj/dangl_lab/apps/CONCOCT-0.4.0/GSL/lib:$LD_LIBRARY_PATH
+
+
 function HELP {
     echo "
     ===============================================================================
@@ -107,17 +111,18 @@ for file in *.bam; do
     echo $prefix >> $sample_names_file
 done
 
+if [ ! -e $out/concoct_coverage_mean.csv ]; then
+    # generate the input table for coverage
+    python $scripts/gen_input_table.py --samplenames $sample_names_file $ref_fasta *.bam > $out/concoct_coverage_table.csv
 
-# generate the input table for coverage
-python $scripts/gen_input_table.py --samplenames $sample_names_file $ref_fasta *.bam > $out/concoct_coverage_table.csv
+    # trim coverage file to just mean cov
+    cut -f1,3-26 $out/concoct_coverage_table.csv > $out/concoct_coverage_mean.csv
 
-# trim coverage file to just mean cov
-cut -f1,3-26 $out/concoct_coverage_table.csv > $out/concoct_coverage_mean.csv
+fi
+
 
 # generate the input table for linkage
-python $scripts/bam_to_linkage.py --regionlength 500 --fullsearch --samplenames $sample_names_file $ref_fasta *.bam > $out/concoct_linkage_table.csv
+#python $scripts/bam_to_linkage.py --regionlength 500 --fullsearch --samplenames $sample_names_file $ref_fasta *.bam > $out/concoct_linkage_table.csv
 
 # run concoct
 concoct --coverage_file $out/concoct_coverage_mean.csv --composition_file $ref_fasta -c 1000 -b $out
-
-
