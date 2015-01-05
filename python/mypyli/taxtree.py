@@ -8,8 +8,7 @@ from Bio import Entrez
 import pickle
 
 
-# TODO: Incorporating building the taxtree  has mostly gone well except you can only load the resulting taxtree if both TaxTree and TaxNode are in the namespace (ie. having the taxtree module isn't good enough). So, I need to find a way to export the classes to namespace when module is added or find another system. 
-
+# TODO: Incorporate taxstrings lookup functions to allow the lookup of unknown data.
 
 
 
@@ -209,9 +208,17 @@ class TaxNode(object):
                 return null
 
 
-
+# These functions are used to build a TaxTree that can be imported later. 
+# they use a self import so when the object is pickled, it gets pickled 
+# with an absolute path (mypyli.taxtree.TaxTree) so when this module is 
+# imported, it is not required to import * (just import mypyli.taxtree).
+# There may be a better way to do this but this is the best I've found.
 def build_tree_from_NCBI(names_f, nodes_f):
     """ Builds and returns a TaxTree built from the NCBI names.dmp and nodes.dmp files """
+    
+    from mypyli import taxtree
+
+    
     data_dict = {}
 
     # get the names for each taxid
@@ -241,8 +248,8 @@ def build_tree_from_NCBI(names_f, nodes_f):
 
     # build the TaxTree
     
-    tree = TaxTree()
-    TaxNode.set_default_tree(tree)
+    tree = taxtree.TaxTree()
+    taxtree.TaxNode.set_default_tree(tree)
   
     # make a parent to id dict
     parent2child = {}
@@ -251,7 +258,7 @@ def build_tree_from_NCBI(names_f, nodes_f):
 
 
     # add the root node
-    TaxNode(taxid="131567", name="cellular organisms", rank="root", parent=None)
+    taxtree.TaxNode(taxid="131567", name="cellular organisms", rank="root", parent=None)
 
     print("Adding nodes...", file=sys.stderr)
     tree = _add_nodes_recurs(["131567"], parent2child, data_dict, tree)
@@ -273,14 +280,24 @@ def _add_nodes_recurs(to_add, parent2child, data_dict, tree):
         and to_add is a list containing only the taxid of the root node.
 
     """
-        
+    from mypyli import taxtree
+
+
     next_add = []
     for parent in to_add:
         pnode = tree.lookup_taxid(parent)
         for child in parent2child.get(parent, []):
             entry = data_dict.get(child, None)
+            
+            # check if superkingdom should be changed to kingdom
+            # I prefer to do this because the Bacteria entry is listed as superkingdom
+            # and I would like it to be listed as kingdom instead.
+            # If you want it as it appears in the taxonomy, comment out this if statement
+            if entry['rank'] == "superkingdom":
+                if pnode.rank == "root":
+                    entry['rank'] = "kingdom"
 
-            cnode = TaxNode(child, name=entry['name'], rank=entry['rank'], parent=pnode)
+            cnode = taxtree.TaxNode(child, name=entry['name'], rank=entry['rank'], parent=pnode)
 
             pnode.add_child(cnode)
             next_add.append(child)
