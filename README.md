@@ -11,4 +11,4 @@ Therefore, FEEL FREE TO USE/MODIFY ANYTHING YOU FIND HERE BUT DO SO AT ENTIRELY 
 
 As time goes on, I will make an attempt to set aside what I consider to be the scripts that are most useful to a wider audience and provide sufficient documentation/error checking to enable others to use these scripts.
 
-NOTE: Almost all of these scripts were written using vim so I did not follow the PEP line length guidelines because it is a pain to manually wrap lines (and then rewrap for edits...) so some scripts will have lines that are quite long though I do make an effort to split code into multiple lines when it makes sense to me to do so. 
+NOTE: Almost all of these scripts were written using vim so I did not follow the PEP line length guidelines because it is a pain to manually wrap lines (and then rewrap for edits...). So, some scripts will have lines that are quite long though I do make an effort to split code into multiple lines when it makes sense to me to do so. 
