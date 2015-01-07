@@ -23,7 +23,7 @@ def write_fasta_by_header(fasta=None, headers=[], new_headers=None, out="fasta_f
         for record in SeqIO.parse(IN, "fasta"):
             if record.id in header_hash:
                 record.id = header_hash.pop(record.id)
-                print(record.id)
+                #print(record.id)
                 record.description = record.id
                 SeqIO.write(record, OUT, "fasta")
     

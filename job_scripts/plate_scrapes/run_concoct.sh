@@ -121,8 +121,51 @@ if [ ! -e $out/concoct_coverage_mean.csv ]; then
 fi
 
 
-# generate the input table for linkage
-#python $scripts/bam_to_linkage.py --regionlength 500 --fullsearch --samplenames $sample_names_file $ref_fasta *.bam > $out/concoct_linkage_table.csv
-
 # run concoct
-concoct --coverage_file $out/concoct_coverage_mean.csv --composition_file $ref_fasta -c 1000 -b $out
+if [ ! -e $out/clustering_gt1000.csv ]; then 
+    concoct --coverage_file $out/concoct_coverage_mean.csv --composition_file $ref_fasta -c 1000 -b $out
+fi
+
+
+# I haven't found that anything below this actually does anything
+exit 0 
+
+# validate initial clustering
+#if [ ! -e $out/clustering_eval_gt1000.csv ]; then
+#    echo "Validating original clustering..."
+#    perl $scripts/Validate.pl --cfile $out/clustering_gt1000.csv --ffile $ref_fasta --ofile $out/clustering_eval_gt1000.csv
+#fi
+
+# generate the input table for linkage
+if [ ! -e $out/concoct_linkage_table.csv ]; then
+    python $scripts/bam_to_linkage.py --regionlength 500 --fullsearch --samplenames $sample_names_file $ref_fasta *.bam > $out/concoct_linkage_table.csv
+fi
+
+# add linkage info to clustering
+if [ ! -e $out/clustering_gt1000_link.csv ]; then
+    perl $scripts/ClusterLinkNOverlap.pl --cfile $out/clustering_gt1000.csv --lfile $out/concoct_linkage_table.csv --covfile $out/concoct_coverage_mean.csv --ofile $out/clustering_gt1000_link.csv
+fi
+
+# removed because it requires species classification of the contigs
+# validate new clustering
+#if [ ! -e $out/clustering_eval_link.csv ]; then
+#    echo "Validating linkage clustering..."
+#    perl $scripts/Validate.pl --cfile $out/clustering_gt1000_link.csv --ffile $ref_fasta --ofile $out/clustering_eval_link.csv
+#fi
+
+
+echo "Successfully Completed."
+
+exit 0
+echo "
+
+For Cluster Validation:
+    N = number of contigs clustered
+    M = number with labels
+    S = number of unique labels
+    K = number of clusters
+    Rec = recall
+    Prec = precision
+    NMI RAND = normalized mutual information RAND score
+    AdjRAND = adjusted RAND score
+"
