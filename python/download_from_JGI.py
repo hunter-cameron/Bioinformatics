@@ -26,8 +26,9 @@ global LOGIN, XML, DATA, LOOKUP
 LOGIN = 'https://signon.jgi.doe.gov/signon/create'
 XML = 'http://genome.jgi.doe.gov/ext-api/downloads/get-directory?organism='     # complete with organism name
 DATA = 'http://genome.jgi.doe.gov/'     # complete with path to file from the organism XML
-LOOKUP = "http://genome.jgi.doe.gov/lookup?"
-
+LOOKUP = 'http://genome.jgi.doe.gov/lookup?'
+OID_LOOKUP = 'https://img.jgi.doe.gov/cgi-bin/w/main.cgi?'
+#OID_LOOKUP = 'https://img.jgi.doe.gov/cgi-bin/w/main.cgi?section=TaxonDetail&page=taxonDetail&taxon_oid='
 
 def usage():
     print("")
@@ -41,13 +42,20 @@ def usage():
 
 class JGIEntry:
 
-    def __init__(self, parent, proj_id):
-        self.id = proj_id
+    def __init__(self, parent, id, id_type):
+        self.id = id
+        self.id_type = id_type
+        self.alt_id = None      # This will be used to store whichever id is not given
+                                # Ex. this is proj_id when taxon_oid is given and vice-versa
+                                # This is a first step for allowing files to be named by taxon_oid
+
+        self.downld_prefix = None
         self.parent = parent
         #print parent
-
+        
         self.name = self._lookup_name()
         if not self.name:
+            self.tree = None
             return
 
         self.tree = self.parse_xml()
@@ -81,9 +89,27 @@ class JGIEntry:
             Find the download data text. This gives a lookup address identical to what I would have created using
             projid
         """
+        
+        if self.id_type == 'img_oid':
+            # THIS METHOD DOES NOT WORK BECAUSE BOTS DON'T HAVE PERMISSION
+            # simulate header to pretend not to be bot
+            headers = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:24.0) Gecko/20140924 Firefox/24.0 Iceweasel/24.8.1'}
 
-        my_params = {'keyName': 'jgiProjectId', 'keyValue': self.id}
-        name_html = self.parent.session.get(LOOKUP, params=my_params)    # use the parent session to maintain cookies
+            
+            my_params = {'section': 'TaxonDetail', 'page': 'taxonDetail', 'taxon_oid': self.id}
+            img_html = self.parent.session.get(OID_LOOKUP, params=my_params, headers=headers)
+            
+            m = re.search("\"genome-btn download-btn.*href=['\"](.*)['\"]", img_html.text)
+            if m:
+                print(m.group(1))
+                name_html = self.parent.session.get(m.group(1))
+            else:
+                print("Couldn't find URL for IMG id: {}".format(self.id), file=sys.stderr)
+                return ""
+
+        else:   # id_type = proj
+            my_params = {'keyName': 'jgiProjectId', 'keyValue': self.id}
+            name_html = self.parent.session.get(LOOKUP, params=my_params)    # use the parent session to maintain cookies
         print((self.id, name_html.url))
         # would it be possible to use the url to isolate the name? Rather than the text It must not be becuase I did it
         # this way. I think JGI may not always use the appropriate name in their URLs.
@@ -179,9 +205,14 @@ class JGIEntry:
 
         make_dir option will make a directory to store all download files from this instance
         """
+        # if there is no tree skip 
+        if not self.tree:
+            print("No files (or access denied) for {}. Skipping Download.".format(self.id))
+            return
+
         if make_dir:
             local_dir = local_dir + "/" + self.id
-            if not local_dir:
+            if not os.path.isdir(local_dir):
                 try:
                     os.mkdir(local_dir)
                 except IOError as e:
@@ -189,7 +220,7 @@ class JGIEntry:
                     print(e)
                     sys.exit("Could not make directory")
 
-
+        
         to_download = self._get_download_tuple(download_regex)
 
         for url, local_name in to_download:
@@ -252,7 +283,7 @@ class JGIEntry:
                 if not directory:
                     directory = self.tree
                 for file_name in directory:
-                    print(file_name)
+                    #print(file_name)
                     match = re.search(folder_re, file_name)
                     if match and "filename" not in directory[file_name]:     # match & not file
                         directory = directory[file_name]
@@ -319,11 +350,11 @@ class JGIInterface(object):
     throughout the session
     """
 
-    def __init__(self, login_file, id_file):
+    def __init__(self, login_file, ids, id_type):
 
         self.session = self._login(login_file)
-        if id_file:
-            self.genomes = self._make_genomes(id_file)
+        if ids:
+            self.genomes = self._make_genomes(ids, id_type)
 
     @staticmethod
     def _login(login_file=''):
@@ -364,7 +395,7 @@ class JGIInterface(object):
             print("Login Successful!", file=sys.stderr)
             return session
 
-    def _make_genomes(self, ids=''):
+    def _make_genomes(self, ids, id_type):
         """
         Makes a JGIEntry object for each id in the id_list.
 
@@ -374,19 +405,20 @@ class JGIInterface(object):
 
         genomes = []
         
+        # TODO Change this to a try except
         if os.path.isfile(ids):
             #read the jgi_file for proj_ids
 
             with open(ids, 'r') as in_handle:
                 for line in in_handle:
                     line = line.strip()
-                    proj_id = JGIEntry(self, line)
+                    proj_id = JGIEntry(self, line, id_type=id_type)
                     genomes.append(proj_id)
 
         else:       # parse the ids given directly at the command line
             ids = ids.strip()
             elems = ids.split("|")
-            genomes = [JGIEntry(self, genome) for genome in elems]
+            genomes = [JGIEntry(self, genome, id_type=id_type) for genome in elems]
 
 
         return genomes
@@ -436,6 +468,7 @@ if __name__ == "__main__":
     """)
     parser.add_argument("--login", "-l", help="file with login on one line and password on next", type=str, required=True)
     parser.add_argument("-ids", help="file with JGI OIDs, one per line. Alternatively can be supplied as a single id or a list of ids separated by '|' at the command prompt", type=str)
+    parser.add_argument("-id_type", help="the type of id supplied", choices=['proj', 'img_oid'], required=True)
     parser.add_argument("--get", "-g", help="""folder and regex of data to download separated by '|'. More than one can be included as positional arguments separated by a space Ex: -g 'folder|regex' 'folder|regex'
             \n...Sample: -g 'IMG Data|.*(?:fna|faa|gbk)$' -- matches any file that ends in fna, faa, or gbk in the IMG Data folder.""" , type=arg_type_get, nargs='*')
     parser.add_argument("-out", help="prefix for the downloads", type=str, default=prefix)
@@ -443,7 +476,7 @@ if __name__ == "__main__":
     parser.add_argument("--r", "--resume", help="resumes file downloads, skips files that already have a local path", action="store_true")
     args = parser.parse_args()
 
-    interface = JGIInterface(args.login, args.ids)
+    interface = JGIInterface(args.login, args.ids, args.id_type)
 
     if args.download:
         interface.download(args.download)

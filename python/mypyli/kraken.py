@@ -1,5 +1,7 @@
 
 import sys
+from mypyli.taxtree import TaxTree
+
 
 class KrakenIO(object):
     """ This is basically just a class to mimic SeqIO from Biopython to give user friendly access """ 
@@ -15,15 +17,22 @@ class KrakenIO(object):
         for line in kraken_fh:
             yield KrakenRecord(line)
 
+    def set_tree(tree):
+        """ Sets the tree for the KrakenRecord objects to use. Accepts either file or TaxTree obj"""
+        #print((type(tree), type(TaxTree())))
+        if type(tree) == type(TaxTree()):
+            KrakenRecord.tree = tree
+        else:
+            KrakenRecord.tree = TaxTree.load_tree(tree)
 
-    def __init__(self):
+    def __init__(self, tree=None):
         pass
 
 
 
 class KrakenRecord(object):
-    
-    tree = TaxTree.load_tree("/nas02/home/h/j/hjcamero/scripts/python/mypyli/taxtree_kingdom.pickle")
+    # this is the hard coded default tree, this should probably be removed in favor of portability
+    tree = None #TaxTree.load_tree("/nas02/home/h/j/hjcamero/scripts/python/mypyli/taxtree_kingdom.pickle")
 
     @classmethod
     def parse_kraken_file(cls, kraken_f, iterate=True):
@@ -61,6 +70,8 @@ class KrakenRecord(object):
 
 
     def __init__(self, line):
+        # set up the taxtree 
+
         # "chomp" the line
         line = line.rstrip()
         line_dict = {key: value for key, value in zip(["classified", "name", "tax_id", "length", "id_hits"], line.split("\t"))}
@@ -77,39 +88,53 @@ class KrakenRecord(object):
 
 
     def get_kraken_confidence(self):
-        """ This is a confidence measure that kraken talks about in their readme.
+        """ 
+        This is a confidence measure that kraken talks about in their readme.
 
         It is simply the # of kmers mapping to nodes rooted in the assigned node divided by
-        the number of non-ambiguous sequences (assigned to A:)
+        the number of non-ambiguous sequencesi (= seqs assigned to A:)
         """
-        if not self.classsified:
-            return 0
+        # may want to return something different if not classified b/c 0/0 might be misleading
+        if not self.classified:
+            return "0/0"
         
         kmer_dict = self._convert_hits_to_dict()
 
         accurate_count = 0
         inaccurate_count = 0
         tree = KrakenRecord.tree
-        assigned = tree.lookup_taxid(self.taxid)
+        assigned = tree.lookup_taxid(self.taxid)        # not error checked but really should be
         for taxid in kmer_dict:
-            current = tree.lookup_taxid(taxid)
-
-            if current == 'A' or current == "0":
+            if taxid == 'A':
+                continue
+            if taxid == '0':
+                inaccurate_count += int(kmer_dict[taxid])
                 continue
 
-            elif assigned == current or assigned.is_parent_of(current):
+            # try to look up the id 
+            try:
+                current = tree.lookup_taxid(taxid)
+            except KeyError:
+                print("Taxid {} not found in the TaxTree.".format(taxid))
+                raise
+
+            if assigned == current or assigned.is_ancestor_of(current):
                 accurate_count += int(kmer_dict[taxid])
             else:
                 inaccurate_count += int(kmer_dict[taxid])
                 
-
+        # return a string like this so it won't be conv. to decimal so numbers are preserved
+        # ie. 1/2 (.5) is much different than 5000/10000 (.5)
+        
+        return str(accurate_count / (accurate_count + inaccurate_count))
+        #return str(accurate_count) + "/" + str(accurate_count + inaccurate_count)
         
 
     def _convert_hits_to_dict(self):
-        """ This converts the hits to a dict. But I'm leaving options open to convery to some sort of list because I might want to preserve the order in which kmers mapped to find misassembled contigs. """
+        """ This converts the hits to a dict. But I'm leaving options open to convert to some sort of list because I might want to preserve the order in which kmers mapped to find misassembled contigs. """
         if type(self.kmer_hits) is str:
             kmer_dict = {}
-            for hit in kmer_hits.split(" "):
+            for hit in self.kmer_hits.split(" "):
                 [taxid, count] = hit.split(":")
                 kmer_dict[taxid] = kmer_dict.get(taxid, 0) + int(count)
 
