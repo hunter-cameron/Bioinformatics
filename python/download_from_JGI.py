@@ -387,9 +387,9 @@ class JGIInterface(object):
         request = session.post(LOGIN, data=login_data)
 
         # check status of logon
-        # print r.text       # uncomment to display raw login info. Useful to look through if having problems
         match = re.search('You have signed in successfully.', request.text)
         if not match:
+            print(request.text)       # uncomment to display raw login info. Useful to look through if having problems
             raise AssertionError("Login may not have been successful")
         else:
             print("Login Successful!", file=sys.stderr)

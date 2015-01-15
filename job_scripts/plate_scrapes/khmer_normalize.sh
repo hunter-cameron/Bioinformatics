@@ -145,7 +145,7 @@ fi
 if [ ! -e $prefix.khmer_singles.fastq.gz ]; then
     echo "Concatenating single reads..."
     #cat *single.fastq.keep.abundfilt *keep.abundfilt.se | gzip -c > $prefix.khmer_singles.fastq.gz
-    cat *single.fastq.keep.abundfilt *keep.abundfilt.se > $prefix.khmer_singles.fastq.gz
+    cat *single.fastq.keep.abundfilt *keep.abundfilt.se > $prefix.khmer_singles.fastq
 else
     echo "Found zipped single reads...skipping"
 fi
