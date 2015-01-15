@@ -1,0 +1,9 @@
+This is one of the first projects I worked on so I don't remember much about it.
+
+It basically takes a source directory of fasta files and ran cBar on every fasta
+in the directory and dumped the results to an output directory along with a graph
+of the sequences classified as plasmids and their links.
+
+The fastX... script is from Scott Yourstone.
+
+plasgraph+.pl is the script to run. The others are previous versions of it.

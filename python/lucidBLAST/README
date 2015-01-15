@@ -1,0 +1,45 @@
+A small (relatively untested) software package for displaying the
+results of a BLAST search (XML format) as a series of alignments
+to a reference genome.
+
+Works best when the number of references are small.
+
+Intended to be used to find duplications and misassemblies in contigs: 
+BLAST the contig by itself and load it into lucidBLAST and anywhere with
+coverage that that stacks (2 or more lines over the reference) is a 
+duplicated region. 
+
+
+I am not intending to add new features to this software package but I do
+intend to clean up and document what is already here because I think it
+may be of use to the lab after I leave.
+
+With that said, I haven't worked on this project since I began learning
+Python but I do remember enjoying working on it then so I may end up
+adding just some small features as I see fit :-). Or, at least, I could
+be easily convinced to add something to this package if "need" arises.
+
+This project is currently only one I've written using an IDE (PyCharm) 
+so any quirks in the code that look like they were written by a machine 
+might actually have been!
+
+
+Usage Tips:
+
+Entry point is through BLAST_parser.py
+
+In display mode, references can be changes by clicking on another reference
+from the left of the screen and dragging it to the plot you want it to be 
+displayed in.
+
+Click on the lines to display more information about them in the information 
+pannel. 
+
+NOTE:
+Due to display resolution, sometimes it looks like alignments overlap when
+they actually do not. Also, it looks like some alignments are huge when
+actually there are just a series of small nearby alignments. This is an
+artifact of displaying kilo or megabases of sequence using a screen 
+resolution that is only several thousand pixels at most. I.E. hundreds 
+or thousands of bases will be represented by a single pixel. 
+

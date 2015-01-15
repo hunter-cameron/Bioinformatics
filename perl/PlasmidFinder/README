@@ -1,0 +1,13 @@
+This was an early project used to help search for plasmids in the
+contigs of a draft genome assembly. 
+
+I don't remember anything about it besides that.
+
+Also has some scripts (and prototypes of scripts) that were helpful for
+turning the results into a format that I could insert into a MySQL database.
+
+Small example of doing object oriented programming in perl using 
+Damian Conway's inside-out objects.
+
+
+I believe the dump_all_stats.pl might be the most recent entry point.
