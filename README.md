@@ -1,7 +1,7 @@
 Bioinformatics
 ==============
 
-A collection of scripts I wrote (am writing) that are tailored to the bioinformatic tasks I needed to do while working for the Dangl lab at UNC-Chapel Hill.
+A collection of scripts I wrote (am writing) that are tailored to the bioinformatic tasks I need to do while working for the Dangl lab at UNC-Chapel Hill.
 
 ==============
 
