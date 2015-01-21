@@ -13,12 +13,21 @@ import re
 import os
 import sys
 import argparse
+from argparse import RawTextHelpFormatter
 import time
 
 from lxml import etree
 
 
 # TODO Add support for OID in addition to project ID
+        # DONE: but works by passing a (fake) user agent string to the JGI CGI. They
+        # don't want bots interfacting with that (as per the "no bots 
+        # allowed" message) so I don't want to use that route to access the data. 
+
+# TODO Add support for GenBank and other IMG files. -- In progress
+
+# TODO Raise errors when issues arise rather than returning blanks. Handle these using
+        # *specific* try: except statements.
 
 
 # these globals are the base paths for the JGI webportals that are needed
@@ -27,20 +36,9 @@ LOGIN = 'https://signon.jgi.doe.gov/signon/create'
 XML = 'http://genome.jgi.doe.gov/ext-api/downloads/get-directory?organism='     # complete with organism name
 DATA = 'http://genome.jgi.doe.gov/'     # complete with path to file from the organism XML
 LOOKUP = 'http://genome.jgi.doe.gov/lookup?'
-OID_LOOKUP = 'https://img.jgi.doe.gov/cgi-bin/w/main.cgi?'
-#OID_LOOKUP = 'https://img.jgi.doe.gov/cgi-bin/w/main.cgi?section=TaxonDetail&page=taxonDetail&taxon_oid='
+IMG_LOOKUP = 'https://img.jgi.doe.gov/cgi-bin/w/main.cgi?'
 
-def usage():
-    print("")
-    print("Usage: automate_jgi.py -l <file> -i <file> -o <file> -g 'JGI|raw' (--login, --ids, --out, --get)")
-    print("         -l, --login <file>          File with login credentials.(username\\npassword)")
-    print("         -i, --ids <file>            File with a list of JGI Taxon Ids")
-    print("         -o, --out <file>            Prefix path for output")
-    print("         -g, --get <'JGI|raw'>       Folder to download. Currently supports either JGI data or raw data.")
-    print("")
-
-
-class JGIEntry:
+class JGIEntry(object):
 
     def __init__(self, parent, id, id_type):
         self.id = id
@@ -86,12 +84,10 @@ class JGIEntry:
 
         Potential method:
             Look up taxon id in IMG using standard link (from website and insert oid)
-            Find the download data text. This gives a lookup address identical to what I would have created using
-            projid
+            Find the download data text. This gives a lookup address identical to what I would have created using projid
         """
         
         if self.id_type == 'img_oid':
-            # THIS METHOD DOES NOT WORK BECAUSE BOTS DON'T HAVE PERMISSION
             # simulate header to pretend not to be bot
             headers = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:24.0) Gecko/20140924 Firefox/24.0 Iceweasel/24.8.1'}
 
@@ -111,12 +107,14 @@ class JGIEntry:
             my_params = {'keyName': 'jgiProjectId', 'keyValue': self.id}
             name_html = self.parent.session.get(LOOKUP, params=my_params)    # use the parent session to maintain cookies
         print((self.id, name_html.url))
-        # would it be possible to use the url to isolate the name? Rather than the text It must not be becuase I did it
-        # this way. I think JGI may not always use the appropriate name in their URLs.
+        
+        
+        # would it be possible to use the url to isolate the name? Rather than the text? I don't think it was becuase I did it this way. I think JGI may not always use the full name in their URLs.
 
         #print(name_html.text)
-        match = re.search('href="/(.*)/.*\.info\.html', name_html.text)     # search for
-        # href="/(NAME)/ANYTHING.info.html
+
+        # search for href="/(NAME)/ANYTHING.info.html
+        match = re.search('href="/(.*)/.*\.info\.html', name_html.text)
 
         # print(match.group(1))
         # check for a match
@@ -127,13 +125,14 @@ class JGIEntry:
             print("Name not found for id: {}".format(str(self.id)))
 
             return ""
-            #instead of return, might be nice to remove the reference in the parent list
+            # instead of return, might be nice to remove the reference in the parent list
 
     def parse_xml(self):
         """
         Parses the XML structure to return a nested hash of folders and files available.
 
         Structure Expected:
+
         <organismDownloads>
             <folder1>
                 <file1>
@@ -143,6 +142,8 @@ class JGIEntry:
                 <file1>
             </folder>
         </organismDownloads>
+
+        Will now handle nested folders.
         """
 
         link = XML + self.name
@@ -157,28 +158,13 @@ class JGIEntry:
 
         self._add_children(files, root)
 
-        #for child in root:
-        #    if child.tag == "folder":
-
-        #        folder_name = child.attrib["name"]      # need to check if this is correctly assigned
-        #        files[folder_name] = {}
-
-        #        for gchild in child:
-        #            if gchild.tag == "file":
-        #                file_name = gchild.attrib["filename"]
-        #                files[folder_name][file_name] = gchild.attrib
-        #            else:
-        #                print("Unknown grand-child tag: {}".format(gchild.tag))
-        #    else:
-        #        print("Unknown child tag: {} ".format(child.tag))
-
         return files
 
     def _add_children(self, files, node):
         """
-        Recursively adds children nodes to the hash
+        Recursively adds children nodes to the hash.
         
-        This may end up a class method
+        This may end up as a class method.
         """
 
         child_dict = {}
@@ -344,6 +330,98 @@ class JGIEntry:
                     fh.flush()
 
 
+class IMGEntry(object):
+    """ 
+    A class to get data from the IMG web portal.
+
+    Note: This class is different than a JGI entry because this one uses taxon ids
+    to interact with the CGI on IMG's web portal to download a different set of data.
+
+    This class will effectively help to clean up the JGI entry class by splitting the 
+    work.
+    """
+
+    def __init__(self, parent, taxon_oid):
+        self.parent = parent
+        self.taxon_oid = taxon_oid
+
+        # header to display to the website
+        self.header = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:24.0) Gecko/20140924 Firefox/24.0 Iceweasel/24.8.1'}
+
+        #self.name = self._lookup_name()
+
+    def lookup_proj_id(self):
+        """ 
+        Returns: the JGI project id as a string.
+        Excepts: ValueError
+        """
+            
+        my_params = {'section': 'TaxonDetail', 'page': 'taxonDetail', 'taxon_oid': self.taxon_oid}
+        img_html = self.parent.session.get(OID_LOOKUP, params=my_params, headers=self.header)
+        
+        # match the keyValue param in the link with digits to allow the keyValue param to
+        # be anywhere within the link 
+        # this will need to be changed if JGI ever adds letters to their ids
+        m = re.search("\"genome-btn download-btn.*href=['\"].*keyValue=(\d*).*['\"]", img_html.text)
+        if m:
+            print(m.group(1))
+            return m.group(1)
+        else:
+            #print("Couldn't find URL for IMG id: {}".format(self.taxon_oid), file=sys.stderr)
+            raise ValueError("Download link for found for IMG Id: {}".format(self.taxon_oid))
+
+    def download_genbank(self):
+        """ 
+        Returns: a whole genbank file as a string
+        Excepts: ValueError
+
+        This function should work but should NOT be used because I have not 
+        yet ensured that it will perform properly and have not gotten permission
+        from JGI to use this!
+
+        Also, I should probably stream the genbank directly to a file to handle
+        the possibility of huge files. This is just a proof-of-concept function
+        currently. 
+        """
+        
+        payload = {     'taxon_oid': self.taxon_oid,
+                        'scaffold_oid': 'all',
+                        'format': 'gbk',
+                        '_section_TaxonDetail_processArtemisFile': 'Go'
+                    }
+        
+        
+        # NOTE: this can take a while for genomes with many scaffolds
+        # ALSO NOTE: Don't use this! For genomes with > 1000 scaffolds,
+        # JGI has a separate pipeline. I have yet to check if it is the same.
+
+        # this requests the JGI servers generate the file
+        request = self.parent.session.post(IMG_LOOKUP, data=payload, headers=self.header)
+ 
+        # get the pid
+        # should make this regex more general in case the tags are in a different order
+        match = re.search("id='pid' name='pid' value=\'(\d+)\'", request.text)
+
+        try:
+            pid = match.group(1)
+            print(("pid", pid))
+        except:
+            print(request.text)
+            raise ValueError("PID not found.")
+     
+        # This is the payload required to download the file. PID obtained from request
+        payload = {     'pid': pid,
+                        '_section_TaxonDetail_downloadArtemisFile_noHeader': 'Download File',
+                        'type': 'gbk'
+                    }
+
+        # dowload the .gbk file
+        r = self.parent.session.post(IMG_LOOKUP, data=payload, headers=self.header)
+    
+        # TODO error checking here to make sure gbk_file is actually a gbk file
+
+        return r.text
+
 class JGIInterface(object):
     """
     Class for managing the connection with JGI, responsible for logging in, establishing, and maintaining cookies
@@ -398,8 +476,6 @@ class JGIInterface(object):
     def _make_genomes(self, ids, id_type):
         """
         Makes a JGIEntry object for each id in the id_list.
-
-        TODO: Accept a list of ids as an option
         """
 
 
@@ -452,6 +528,11 @@ def arg_type_get(arg):
         raise argparse.ArgumentTypeError("Error processing the --get argument.")
 
 
+def test_download_gbk(interface, img_oid):
+    genome = IMGEntry(parent=interface, taxon_oid=img_oid)
+
+    with open("test.gbk", 'w') as OUT:
+        OUT.write(genome.download_genbank())
 
 
 if __name__ == "__main__":
@@ -460,23 +541,69 @@ if __name__ == "__main__":
 
     prefix = os.getcwd()
 
-    parser = argparse.ArgumentParser(description="""
-    Downloads files from JGI based on Project ID.
+    # is there a way to remove the whitespace at the beginning of the lines and still have it display correctly?
+    # I want this to look like this on th eoupt screen but I want it to be formatted python-style here
 
-    Leave option --get blank to list files available for download
+    parser = argparse.ArgumentParser(description="""
+    Author: Hunter Cameron
+    Github: https://github.com/hunter-cameron/Bioinformatics/tree/master/python
+    
+    Description:
+        Downloads files from the Joint Genome Institute (JGI) based on JGI
+        Project Id. 
+
+        Files to be downloaded are specified using Python-style regular
+        expressions. 
+
+        Don't supply option '--get' to print a list of file available for 
+        download.
+
+    """, formatter_class=RawTextHelpFormatter)
+    parser.add_argument("--login", "-l", help="""
+file with login on one line and password on next
+
+    """, type=str, required=True)
+    parser.add_argument("-ids", help="""
+file with JGI OIDs, one per line. Alternatively can be supplied 
+as a single id or a list of ids separated by '|' at the command prompt
+            
+    """, type=str)
+    parser.add_argument("-id_type", help="""
+the type of id supplied
+
+    """, choices=['proj', 'img_oid'], required=True)
+    parser.add_argument("--get", "-g", help="""
+folder and regex of data to download separated by '|'. More than 
+one can be included as positional arguments separated by a space. 
+Ex: -g 'folder|regex' 'folder|regex'
+
+    Sample: -g 'IMG Data|.*(?:fna|faa|gbk)$' 
+        -- matches any file that ends in fna, faa, 
+        or gbk in the IMG Data folder.
+
+Don't supply this option to display files available for download.
+        
+    """ , type=arg_type_get, nargs='*')
+    parser.add_argument("-out", help="""
+prefix for the downloads
+
+    """, type=str, default=prefix)
+    parser.add_argument("-d", "--download", help="""
+single file (as URL) to download
 
     """)
-    parser.add_argument("--login", "-l", help="file with login on one line and password on next", type=str, required=True)
-    parser.add_argument("-ids", help="file with JGI OIDs, one per line. Alternatively can be supplied as a single id or a list of ids separated by '|' at the command prompt", type=str)
-    parser.add_argument("-id_type", help="the type of id supplied", choices=['proj', 'img_oid'], required=True)
-    parser.add_argument("--get", "-g", help="""folder and regex of data to download separated by '|'. More than one can be included as positional arguments separated by a space Ex: -g 'folder|regex' 'folder|regex'
-            \n...Sample: -g 'IMG Data|.*(?:fna|faa|gbk)$' -- matches any file that ends in fna, faa, or gbk in the IMG Data folder.""" , type=arg_type_get, nargs='*')
-    parser.add_argument("-out", help="prefix for the downloads", type=str, default=prefix)
-    parser.add_argument("-d", "--download", help="single file (as URL) to download")
-    parser.add_argument("--r", "--resume", help="resumes file downloads, skips files that already have a local path", action="store_true")
+    parser.add_argument("--r", "--resume", help="""
+resumes file downloads, skips files that already have a local path
+
+    """, action="store_true")
     args = parser.parse_args()
 
     interface = JGIInterface(args.login, args.ids, args.id_type)
+
+    ##### TEMP
+    #test_download_gbk(interface, args.ids)
+    #sys.exit()
+
 
     if args.download:
         interface.download(args.download)
