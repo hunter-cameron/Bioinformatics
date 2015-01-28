@@ -73,6 +73,7 @@ for var in paired_read_f single_read_f working_dir; do
             paired_read_f|single_read_f)
                 if [ ! -e ${!var} ]; then
                     echo -e "\nError - Path does not exist: ${!var}"
+                    exit 1
                 fi
                 ;;
 
@@ -106,7 +107,7 @@ echo $prefix
 cd $working_dir
 
 # check if already completed
-if [ -e $prefix.khmer_interleaved.fastq.gz ] && [ -e $prefix.khmer_singles.fastq.gz ]; then
+if [ -e $prefix.khmer_interleaved.fastq ] && [ -e $prefix.khmer_singles.fastq ]; then
     echo -e "\n\nFound final files in outdir $working_dir. Delete the final files of the entire directory to re-run analysis."
     exit 0
 fi
@@ -141,22 +142,22 @@ else
 fi
 
 
-# concatenate and zip the single reads      -- removed the gzip from each 
-if [ ! -e $prefix.khmer_singles.fastq.gz ]; then
+# concatenate singles
+if [ ! -e $prefix.khmer_singles.fastq ]; then
     echo "Concatenating single reads..."
     #cat *single.fastq.keep.abundfilt *keep.abundfilt.se | gzip -c > $prefix.khmer_singles.fastq.gz
-    cat *single.fastq.keep.abundfilt *keep.abundfilt.se > $prefix.khmer_singles.fastq
+    cat $base_single_f.keep.abundfilt $base_paired_f.keep.abundfilt.se > $prefix.khmer_singles.fastq
 else
-    echo "Found zipped single reads...skipping"
+    echo "Found single reads...skipping"
 fi
 
-# rename and zip paired reads
-if [ ! -e $prefix.khmer_interleaved.fastq.gz ]; then
-    echo "Zipping paired reads..."
-    mv *interleaved*keep.abundfilt.pe $prefix.khmer_interleaved.fastq
+# rename paired reads
+if [ ! -e $prefix.khmer_interleaved.fastq ]; then
+    echo "Renaming paired reads..."
+    mv $base_paired_f.keep.abundfilt.pe $prefix.khmer_interleaved.fastq
     #gzip $prefix.khmer_interleaved.fastq
 else
-    echo "Found zipped paired reads...skipping"
+    echo "Found paired reads...skipping"
 fi
 
 

@@ -96,7 +96,7 @@ def wait_until_finished(job_name):
     print("Waiting for jobs to run...", file=sys.stderr, end="\n\n")
     output = 1
     while output:
-        time.sleep(3)
+        time.sleep(300)
         output = subprocess.check_output(["bjobs", "-J", job_name], stderr=open("/dev/null", 'w'))
     return True
 
@@ -157,19 +157,22 @@ def _str2subprocess(command):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Parallelize the running of a BLAST search and return the results as if it was a serial search! All for the low price of $19.99!")
     parser.add_argument("-n", help="number of nodes to use", type=int, default=10)
-    parser.add_argument("-c", help="blast command; hint: wrap this in quotes")
+    parser.add_argument("-c", help="blast command; hint: wrap this in quotes", required=True)
     parser.add_argument("-out", help="directory for the output", default="./")
     parser.add_argument("-q", help="the queue", default="week")
     args = parser.parse_args()
 
     query = parse_query_from_command(args.c)
    
+    # make the output directory if needed 
+    os.makedirs(os.path.abspath(args.out), exist_ok=True)
     # make a temp dir and use it as a random id for the job names
     tmp_out = tempfile.mkdtemp(prefix="fasplit_", dir=os.path.abspath(args.out))
     rand_id = tmp_out.split("/")[-1]
     
     files = split_fasta_file(os.path.abspath(query), args.n, tmp_out + "/")
 
+    # ensures the blast command can be run successfully
     check_blast_command(args.c, os.path.abspath(query), tmp_out)
 
     print("Submitting BLAST jobs...", file=sys.stderr)
@@ -187,6 +190,7 @@ if __name__ == "__main__":
     if output:
         output = os.path.abspath(output)
     else:
+        # could use sys.stdout instead to truly mimic blast 
         output = os.path.abspath(args.out) + "full_blast_results.txt"
 
 

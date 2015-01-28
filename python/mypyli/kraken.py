@@ -74,13 +74,22 @@ class KrakenRecord(object):
 
         # "chomp" the line
         line = line.rstrip()
-        line_dict = {key: value for key, value in zip(["classified", "name", "tax_id", "length", "id_hits"], line.split("\t"))}
+
+        # check if the table has been filtered per kraken-filter or not
+        if len(line.split("\t")) == 5:
+            elems = ["classified", "name", "tax_id", "length", "id_hits"]
+        else:
+            elems = ["classified", "name", "tax_id", "length", "p_val", "id_hits"]
+
+        line_dict = {key: value for key, value in zip(elems, line.split("\t"))}
 
         # set classified to true if C, false otherwise
         self.classified = line_dict['classified'] == 'C'
         self.name = line_dict['name']
         self.taxid = line_dict['tax_id']
-        self.length = line_dict['length']
+        self.length = int(line_dict['length'])
+        if "p_val" in line_dict:
+            self.p_val = float(line_dict['p_val'][2:])  # take off the P=
         self.kmer_hits = line_dict['id_hits']   # leave in raw form in order for faster processing when user doesn't have about hits
         
     def __repr__(self):
@@ -126,13 +135,14 @@ class KrakenRecord(object):
         # return a string like this so it won't be conv. to decimal so numbers are preserved
         # ie. 1/2 (.5) is much different than 5000/10000 (.5)
         
-        return str(accurate_count / (accurate_count + inaccurate_count))
+        return accurate_count / (accurate_count + inaccurate_count)
         #return str(accurate_count) + "/" + str(accurate_count + inaccurate_count)
         
 
     def _convert_hits_to_dict(self):
         """ This converts the hits to a dict. But I'm leaving options open to convert to some sort of list because I might want to preserve the order in which kmers mapped to find misassembled contigs. """
         if type(self.kmer_hits) is str:
+            #print(self.kmer_hits)
             kmer_dict = {}
             for hit in self.kmer_hits.split(" "):
                 [taxid, count] = hit.split(":")

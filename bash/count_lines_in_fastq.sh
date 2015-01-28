@@ -78,7 +78,7 @@ else
             echo -e "$(basename $input)\t$((`zcat $input | sed -n '$='` / 4))"
             ;;
         *)  # not gz
-            echo -e "$(basename $input)\t$((`sed -n '$=' $file` / 4))"
+            echo -e "$(basename $input)\t$((`sed -n '$=' $input` / 4))"
             ;;
     esac
 fi
