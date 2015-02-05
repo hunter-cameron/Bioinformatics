@@ -19,18 +19,10 @@ import time
 from lxml import etree
 
 
-# TODO Add support for OID in addition to project ID ---Done
-        # DONE: but works by passing a (fake) user agent string to the JGI CGI. They
-        # don't want bots interfacting with that (as per the "no bots 
-        # allowed" message) so I don't want to use that route to access the data. 
+# TODO Add some sort of file check to ensure the entire file was downloaded, specifically for the resume option. 
 
-# TODO Add support for GenBank and other IMG files. ---Done - GBK
 
-# TODO Raise errors when issues arise rather than returning blanks. Handle these using
-        # *specific* try: except statements.
-
-# TODO Naming prefix for download files by id
-
+# TODO Move these globals to their classes
 
 # these globals are the base paths for the JGI webportals that are needed
 global LOGIN, XML, DATA, LOOKUP
@@ -40,8 +32,30 @@ DATA = 'http://genome.jgi.doe.gov/'     # complete with path to file from the or
 LOOKUP = 'http://genome.jgi.doe.gov/lookup?'
 IMG_LOOKUP = 'https://img.jgi.doe.gov/cgi-bin/w/main.cgi?'
 
-class JGIEntry(object):
+# custom exceptions
+class DataNotAvailable(Exception):
+    """ Exception to be thrown when the requested data cannot be found. """
+    pass
 
+class PortalError(Exception):
+    """ General exception to be thrown for any type of portal error. """
+    pass
+
+class AccessDenied(PortalError):
+    """ Exception to be thrown when accessing data fails. """
+    pass
+
+class Entry(object):
+    """ This is a future parent class for JGIEntry and IMGEntry """
+    def __init__(self):
+        pass
+
+    def convert_id(self):
+        pass
+
+
+class JGIEntry(object):
+    """ Class for looking up data on JGI """
     def __init__(self, parent, id, prefix="", convert=False):
         self.id = id
         self.parent = parent
@@ -52,30 +66,11 @@ class JGIEntry(object):
 
         self.name = self._lookup_name()
         if not self.name:
-            self.tree = None
+            self.data_tree = None
             return
 
-        self.tree = self.parse_xml()
+        self.data_tree = self._parse_xml()
 
-    def print_available_files(self, files={},  level=0):
-        """ Method to allow recursive printing of files 
-        
-        My filesystem is a hash but the end file has data that is also stored as a hash
-        To get around this right now, I'll look for one of their keys, but really I should do this another way
-        Perhaps by using the JGI links to set up a virtual file system, now that would be neat.
-        """
-
-        if not files:
-            print("Files available for {}".format(self.id), end="\n\n")
-            files = self.tree
-
-        for name in sorted(files.keys()):
-            if "filename" in files[name]:
-                print("   " * level + name)
-            else:
-                print("   " * level + name + "/")
-                self.print_available_files(files=files[name], level=level + 1)
-        
     def _lookup_name(self):
         """
         Looks up organism name based on project id
@@ -105,11 +100,8 @@ class JGIEntry(object):
             return ""
             # instead of return, might be nice to remove the reference in the parent list
 
-    def lookup_taxon_oid(self):
-        """ Coming soon! """
-        raise NotImplementedError
-
-    def parse_xml(self):
+    # Methods to build data tree
+    def _parse_xml(self):
         """
         Parses the XML structure to return a nested hash of folders and files available.
 
@@ -167,7 +159,83 @@ class JGIEntry(object):
 
         files.update(child_dict)
 
-    def download_data(self, download_regex, resume=False, local_dir=os.getcwd(), make_dir=False):
+    # Methods to parse and process URLs to download
+    def _get_download_tuple(self, path, file_reg):
+        """
+        Parses the data tree to get paths that the regex matches.
+        Returns: a list of tuples where each entry has the url and the match object from the regex
+        """
+        
+        directory = {}
+        parent_dir = "root"
+
+        ### Get the folder the file_regex should be executed in
+        for folder_re in path.split("/"):
+            # just in case there is a space at the end of the path
+            # rstrip may be better here
+            if not folder_re:
+                continue
+
+            # set the directory if needed (the first loop)
+            if not directory:
+                directory = self.data_tree
+
+            for file_name in directory:
+                #print(file_name)
+                match = re.search(folder_re, file_name)
+                if match and "filename" not in directory[file_name]:     # match & not file
+                    directory = directory[file_name]
+                    parent_dir = file_name
+                    break
+            else:
+                #print("Folder '{}' not found in '{}' for {}".format(folder_re, parent_dir, self.id))
+                raise DataNotAvailable("Folder '{}' not found in '{}' for {}".format(folder_re, parent_dir,self.id))
+
+        ### Get files that the regex matches
+        new_files = []
+        for file_name in directory.keys():
+            match = re.search(file_reg, file_name)
+            if match:
+                new_files.append((directory[file_name]["url"], match))
+        
+        if new_files:
+            return new_files
+        else:
+            #print("No files found for regex: '{}', id: '{}.'".format(file_reg, self.id), file=sys.stderr)
+            #print("Skipping downloading...", file=sys.stderr, end="\n\n")
+            #return []
+
+            raise DataNotAvailable("No files found for regex: '{}', id: '{}.'".format(file_reg, self.id), file=sys.stderr)
+
+    def _get_full_URL(self, url):
+        """ Adds the base path to the URL """
+        return DATA + url
+
+    # User Methods
+    def print_available_files(self, files={},  level=0):
+        """ Method to allow recursive printing of files 
+        
+        My filesystem is a hash but the end file has data that is also stored as a hash
+        To get around this right now, I'll look for one of their keys, but really I should do this another way
+        Perhaps by using the JGI links to set up a virtual file system, now that would be neat.
+        """
+
+        if not files:
+            print("Files available for {}".format(self.id), end="\n\n")
+            files = self.data_tree
+
+        for name in sorted(files.keys()):
+            if "filename" in files[name]:
+                print("   " * level + name)
+            else:
+                print("   " * level + name + "/")
+                self.print_available_files(files=files[name], level=level + 1)
+
+    def lookup_taxon_oid(self):
+        """ Coming soon! """
+        raise NotImplementedError
+
+    def download_data(self, download_regex):
         """
         Wrapper for _get_download_tuple and _download_path. Allows easier user access.
 
@@ -202,130 +270,44 @@ class JGIEntry(object):
             See: _get_download_tuple() for more information.
 
         """
+        
+        concat = "."
+        
         # if there is no tree skip 
-        if not self.tree:
+        if not self.data_tree:
             print("No files (or access denied) for {}. Skipping Download.".format(self.id))
             return
 
-        if make_dir:
-            local_dir = local_dir + "/" + self.id
-            if not os.path.isdir(local_dir):
-                try:
-                    os.mkdir(local_dir)
-                except IOError as e:
+        # add the files to download
+        path, file_reg = download_regex
+        to_download = self._get_download_tuple(path, file_reg)
 
-                    print(e)
-                    sys.exit("Could not make directory")
+        # make local path prefix
+        if self.prefix:
+            prefix = self.prefix
+        elif self.name:
+            prefix = self.name
+        else:
+            prefix = self.id
 
-        
-        to_download = self._get_download_tuple(download_regex)
-
-        for url, local_name in to_download:
-            if resume:
-                if os.path.isfile(local_name):
-                    print("File: {} found locally. Skipping download.".format(local_name))
-                    continue
-            print("Downloading {} to\n    {}".format(url, local_dir + "/" + local_name))
-            self._download_path(url, local_dir + "/" + local_name)
-
-    def _get_download_tuple(self, download_regex, concat="."):
-        """
-        Given download_regex = [(folder1, regex1), (folder2, regex2)]
-        this method returns = [(URL1, local_path1), (URL2), local_path2)]
-
-        Creates local path based on prefix + suffix where:
-            prefix = one of {self.prefix -> self.name -> self.id} in that order
-            suffix = one of {captured group 1 -> full JGI filename} in that order
-
-        Concatenates prefix and suffix together with the string specified by concat
-
-            """
-        
-        download_files = []
-        # build an array of urls to download while making sure everything checks out as expected
-        for path, regex in download_regex:
-            directory = {}
-            parent_dir = "root"
-            for folder_re in path.split("/"):
-                if not folder_re:
-                    continue
-                if not directory:
-                    directory = self.tree
-                for file_name in directory:
-                    #print(file_name)
-                    match = re.search(folder_re, file_name)
-                    if match and "filename" not in directory[file_name]:     # match & not file
-                        directory = directory[file_name]
-                        parent_dir = file_name
-                        break
-                else:
-                    print("Folder '{}' not found in '{}' for {}".format(folder_re, parent_dir, self.id))
-                    directory = ''
-
-            if directory:
-
-                # get files that the regex matches
-                new_files = []
-                for file_name in directory.keys():
-                    match = re.search(regex, file_name)
-                    if match:
-                        url = directory[file_name]["url"]
-                        # this will be 2 step naming - prefix = org name or user supplied
-                        # - suffix = capture group or full filename
-                        # try for prefix -> organism name -> id
-                        if self.prefix:
-                            prefix = self.prefix
-                        elif self.name:
-                            prefix = self.name
-                        else:
-                            prefix = self.id
-                            
-                        # make the suffix
-                        # option to name it from a captured group
-                        if len(match.groups()) >= 1:
-                            suffix = match.group(1)
-                        else:
-                            suffix = file_name
-
-                        # merge the prefix and suffix with "_" to give final filename
-                        new_files.append((url, prefix + concat + suffix))
-                
-                # see if the regex was successful and add files it found to files the other regexes found
-                if new_files:
-                    download_files += new_files
-                else:
-                    print("No files found for regex: '{}', id: '{}.'".format(regex, self.id), file=sys.stderr)
-                    print("Skipping downloading...", file=sys.stderr, end="\n\n")
-                    #return []
-
+        # make the suffix and download the file
+        for url, match in to_download:
+            
+            # make the suffix
+            # option to name it from a captured group
+            # otherwise name it as the whole match
+            if len(match.groups()) >= 1:
+                suffix = match.group(1)
             else:
-                #return []
-                pass
-        
-        # make sure all local names are unique
-        # NOTE: This will still overwrite already existing local names, may want a "force" option
-        # to enable default to be to not overwrite files
-        names = [name for url, name in download_files]
-        if len(names) > len(set(names)):
-            print("Attempted to download multiple files using the same local path.", file=sys.stderr)
-            for url, name in download_files:
-                print("  {}\t{}".format(name, url), file=sys.stderr)
-            print("Skipping downloading...", file=sys.stderr, end="\n\n")
-            return []
+                suffix = match.group()
 
-        return download_files
-
-    def _download_path(self, url, local_path):
-        url = DATA + url
-        # print(url)
-
-        #download the file in chunks
-        request = self.parent.session.get(url, stream=True)
-        with open(local_path, 'wb') as fh:
-            for chunk in request.iter_content(chunk_size=1024):
-                if chunk:  # filter out keep-alive new chunks
-                    fh.write(chunk)
-                    fh.flush()
+            # merge the prefix and suffix with "_" to give final filename
+            local_name = prefix + concat + suffix
+            
+            # using the current download method, files could have the same local name
+            # which would make then subject to the force option with only one of the
+            # multiples actually being written
+            self.parent.download_data(self._get_full_URL(url), local_name)
 
 
 class IMGEntry(object):
@@ -334,20 +316,16 @@ class IMGEntry(object):
 
     Note: This class is different than a JGI entry because this one uses taxon ids
     to interact with the CGI on IMG's web portal to download a different set of data.
-
-    This class will effectively help to clean up the JGI entry class by splitting the 
-    work.
     """
 
     DATA_TYPES = ['gbk']
 
 
-    def __init__(self, parent, taxon_oid, prefix="", convert=False):
+    def __init__(self, parent, id, prefix=""):
         self.parent = parent
-        self.taxon_oid = taxon_oid
+        self.id = id
         self.prefix = prefix
-        self.convert = convert
-
+        
         # header to display to the website
         self.header = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:24.0) Gecko/20140924 Firefox/24.0 Iceweasel/24.8.1'}
 
@@ -359,7 +337,7 @@ class IMGEntry(object):
         Excepts: ValueError
         """
             
-        my_params = {'section': 'TaxonDetail', 'page': 'taxonDetail', 'taxon_oid': self.taxon_oid}
+        my_params = {'section': 'TaxonDetail', 'page': 'taxonDetail', 'taxon_oid': self.id}
         img_html = self.parent.session.get(IMG_LOOKUP, params=my_params, headers=self.header)
         
         # match the keyValue param in the link with digits to allow the keyValue param to
@@ -371,7 +349,7 @@ class IMGEntry(object):
             return m.group(1)
         else:
             #print("Couldn't find URL for IMG id: {}".format(self.taxon_oid), file=sys.stderr)
-            raise ValueError("Download link for found for IMG Id: {}".format(self.taxon_oid))
+            raise ValueError("Download link not found for IMG Id: {}".format(self.id))
 
     def print_available_files(self):
         """ 
@@ -379,19 +357,15 @@ class IMGEntry(object):
         Currently does no checking, just tells the file types that are implemented 
         """
 
-        print("Files available from IMG for taxon oid {}:".format(self.taxon_oid))
+        print("Files available from IMG for taxon oid {}:".format(self.id))
         print("\t" + "\n\t".join(self.DATA_TYPES))
-
-        if self.convert:
-            jgi = JGIEntry(id=self.lookup_proj_id(), parent=self.parent)
-            jgi.print_available_files()
     
-
-
-    def download_data(self, download_type, resume=False, force=False):
-        if download_type in self.DATA_TYPES:
-            if download_type == 'gbk':
-                gbk_file = self.download_gbk()
+    def download_data(self, download_types):
+       
+        for download_type in download_types:
+            if download_type in self.DATA_TYPES:
+                if download_type == 'gbk':
+                    gbk_file = self.download_genbank()
             else:
                 raise ValueError("download_type: {} is not among the acceptable types: {}".format(download_type, str(self.DATA_TYPES)))
 
@@ -409,15 +383,18 @@ class IMGEntry(object):
         currently. 
         """
         
-        payload = {     'taxon_oid': self.taxon_oid,
+        payload = {     'taxon_oid': self.id,
                         'scaffold_oid': 'all',
                         'format': 'gbk',
                         '_section_TaxonDetail_processArtemisFile': 'Go'
                     }
         
+
         
+        print("Downloading genbank file for {}".format(self.id), file=sys.stderr)
+
         # NOTE: this can take a while for genomes with many scaffolds
-        # ALSO NOTE: Don't use this! For genomes with > 1000 scaffolds,
+        # ALSO NOTE: Don't use this for genomes with > 1000 scaffolds,
         # JGI has a separate pipeline. I have yet to check if it is the same.
 
         # this requests the JGI servers generate the file
@@ -444,9 +421,16 @@ class IMGEntry(object):
         r = self.parent.session.post(IMG_LOOKUP, data=payload, headers=self.header)
     
         # TODO error checking here to make sure gbk_file is actually a gbk file
+        
+        if self.prefix:
+            filename = self.prefix + ".gbk"
+        else:
+            filename = self.taxon_id + ".gbk"
 
-        return r.text
+        with open(filename, 'w') as OUT:
+            OUT.write(r.text)
 
+        print("    Downloaded to {}".format(filename), file=sys.stderr)
 
 class JGIInterface(object):
     """
@@ -454,9 +438,14 @@ class JGIInterface(object):
     throughout the session
     """
 
-    def __init__(self, login_file):
+    def __init__(self, login_file, force=False, resume=False, convert=False):
         self.entries = []
+        self.convert_dict = {}
+
         self.session = self._login(login_file)
+
+        self.force = force
+        self.convert = convert
 
     @staticmethod
     def _login(login_file=''):
@@ -497,7 +486,7 @@ class JGIInterface(object):
             print("Login Successful!", file=sys.stderr)
             return session
 
-    def make_entries(self, ids, id_type, prefix="", convert=False):
+    def make_entries(self, ids, id_type, prefix=""):
         """
         Makes a JGIEntry or IMGEntry object for each id in the id_list.
         """
@@ -516,10 +505,10 @@ class JGIInterface(object):
         # make all the *entry objects
         for id, prefix in zip(id_list, prefix_list):
             if id_type == "proj_id":
-                entry = JGIEntry(parent=self, id=id, prefix=prefix, convert=convert)
+                entry = JGIEntry(parent=self, id=id, prefix=prefix)
 
-            elif id_type == "img_oid":
-                entry = IMGEntry(parent=self, taxon_oid=id, prefix=prefix, convert=convert)
+            elif id_type == "taxon_oid":
+                entry = IMGEntry(parent=self, id=id, prefix=prefix)
             else:
                 raise AssertionError("Wrong id type, should have never gotten here.")
 
@@ -530,7 +519,6 @@ class JGIInterface(object):
         """ 
         Either reads the file from a filename or splits the arg
         Returns: A list of items
-        Excepts: None
         """
         items = []
         try:
@@ -544,18 +532,53 @@ class JGIInterface(object):
             
         return items
 
+    def download_data(self, url, local_path):
+        """ 
+        Downloads a file in chunks.
+        Returns: Nothing
+        Excepts: AssertionError
+        """
 
-    def download(self, url):
         #download the file in chunks
 
-        local_path = url.split("/")[-1]
-        print("Downloading {} to \n{}".format(url, local_path))
+        if os.path.exists(local_path):
+            if self.force:
+                print("!!! Force overwriting: {}".format(local_path), file=sys.stderr)
+            else:
+                print("Force overwrite is not enabled. Refusing to download:\n{} to \n  {}".format(url, local_path), file=sys.stderr)
+                raise AssertionError("Local path must not exist or force must be enabled!")
+
+
+        print("Downloading {} to\n    {}".format(url, local_path), end="\n\n")
         request = self.session.get(url, stream=True)
         with open(local_path, 'wb') as fh:
             for chunk in request.iter_content(chunk_size=1024):
                 if chunk:  # filter out keep-alive new chunks
                     fh.write(chunk)
                     fh.flush()
+
+    def convert_entry(self, entry):
+        """ 
+        Converts an IMGEntry to a JGIEntry and vice versa.
+        Returns: Entry object
+        Excepts: TypeError
+        """
+
+        print("Converting id: {}".format(entry.id), file=sys.stderr)
+        if entry in self.convert_dict:
+            return self.convert_dict[entry]
+
+        else:
+            if type(entry) == JGIEntry:
+                conv_entry = IMGEntry(parent=self, id=entry.lookup_taxon_oid(), prefix=entry.prefix)
+                self.convert_dict[entry] = conv_entry       # store for future quick conversion
+                return conv_entry
+            elif type(entry) == IMGEntry:
+                conv_entry = JGIEntry(parent=self, id=entry.lookup_proj_id(), prefix=entry.prefix)
+                self.convert_dict[entry] = conv_entry
+                return conv_entry
+            else:
+                raise TypeError("Object: {} is of the wrong type.".format(entry))
 
 
 def arg_type_get(arg):
@@ -574,37 +597,68 @@ def arg_type_get(arg):
         raise
         #raise argparse.ArgumentTypeError("Error processing the --get argument.")
 
-def test_download_gbk(interface, img_oid):
-    genome = IMGEntry(parent=interface, taxon_oid=img_oid)
-
-    with open("test.gbk", 'w') as OUT:
-        OUT.write(genome.download_genbank())
-
-
 def main(args):
     """
     Main function to manipulate the classes to download data.
+    
+    Maybe should be incorporated into JGIInterface.
     """
     
-    interface = JGIInterface(args.login)
-    interface.make_entries(args.ids, args.id_type, prefix=args.names, convert=args.convert)
+    interface = JGIInterface(args.login, force=args.force, convert=args.convert)
+    interface.make_entries(args.ids, args.id_type, prefix=args.names)
 
-    ##### TEMP
-    #test_download_gbk(interface, args.ids)
-    #sys.exit()
 
-    # if raw download from path
+    # if download from path
+    # perhaps let user specify name for file using the names argument?
     if args.download:
-        interface.download(args.download)
+        local_path = args.download.split("/")[-1]
+        interface.download_data(args.download, local_path)
         sys.exit()
 
     if args.get:
+        failed_log = []
+        # loop through entries collecting failed
         for entry in interface.entries:
-            entry.download_data(args.get, args.r)
+           
+            # loop through regexes collecting failed
+            failed_regex = []
+            for download_regex in args.get:
+                # check if the data types match the entry
+                if (type(download_regex) == tuple and type(entry) == JGIEntry) or \
+                            (type(download_regex) == str and type(entry) == IMGEntry):
+                    download_entry = entry
+
+                else:
+                    if args.convert:
+                        download_entry = interface.convert_entry(entry)
+                    else:
+                        raise ValueError("Incorrect --get type for your id. Specify --convert to convert between ids.")
+
+                # try to download data
+                try:
+                    download_entry.download_data(args.get)
+            
+                except DataNotAvailable as e:
+                    print(e, file=sys.stderr)
+                    failed_regex.append(download_regex)
+            
+            # write to the failed log
+            failed_log += ["{}: failed regex '{}'".format(entry.get_id(), regex) for regex in failed_regex]
+
+        if failed_log:
+            print("\n\nLog of failed Ids:")
+            [print("  " + entry) for entry in failed_log]
+
     else:
+        # this prints available files for all ids, sometimes this may not be wanted
+        # right now, I'll just give a message telling how to interrupt
         for entry in interface.entries:
+            print("Printing available files for all ids. Press Ctrl+c to interrupt.", file=sys.stderr)
             entry.print_available_files()
-       # interface.entries[0].print_available_files()
+
+            if args.convert:
+                conv_entry = interface.convert_entry(entry)
+                conv_entry.print_available_files()
 
 
 if __name__ == "__main__":
@@ -618,7 +672,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="""
     Author: Hunter Cameron
-    Github: https://github.com/hunter-cameron/Bioinformatics/tree/master/python
+    Github: https://github.com/hunter-cameron/Bioinformatics/tree/master/python/
     
     Description:
         Downloads files from the Joint Genome Institute (JGI) based on JGI
@@ -627,7 +681,7 @@ if __name__ == "__main__":
         Files to be downloaded are specified using Python-style regular
         expressions. 
 
-        Don't supply option '--get' to print a list of file available for 
+        Don't supply option '--get' to print a list of files available for 
         download.
 
     """, formatter_class=RawTextHelpFormatter)
@@ -678,8 +732,10 @@ by '|'
 single file (as URL) to download
 
     """)
-    parser.add_argument("--r", "--resume", help="""
-resumes file downloads, skips files that already have a local path
+    parser.add_argument("-f", "--force", help="""
+forces download of files, overwrites files that already have a local path
+
+Default: False, which enables downloads to be resumed.
 
     """, action="store_true")
     args = parser.parse_args()
