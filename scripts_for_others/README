@@ -1,0 +1,25 @@
+This directory contains scripts that are intended for more general usage.
+
+As the README in the root directory states, use these scripts at entirely
+your own risk!!! I hope they will be useful but they should all be considered
+beta versions. I have not extensively error checked any of them though I will 
+be more than happy to deal with any bugs/errors that are brought to my 
+attention.
+
+
+Current Scripts in this Directory:
+
+download_from_JGI.py        Script to log in and download files from the JGI
+                            or IMG websites. For documentation, run using the
+                            '-h' option.
+
+mypyli                      MY PYthon LIbrary. Custom library of python
+                            modules that can be imported into your scripts.
+                            These are all experimental but I have found the
+                            most useful to be taxtree.py which does operations
+                            with taxonomy strings (k_Bacteria; p_...) including
+                            looking them up from taxonomy ids, trimming them,
+                            and performing simple "is-a-member-of" functions.
+                            Within taxtree.py, converting taxids to taxonomy
+                            strings is fairly well tested (though not error
+                            proof) but other functions aren't as well tested.

@@ -24,7 +24,7 @@ def write_fasta_by_header(fasta=None, headers=[], new_headers=None, out="fasta_f
             if record.id in header_hash:
                 record.id = header_hash.pop(record.id)
                 #print(record.id)
-                record.description = record.id
+                record.description = ""
                 SeqIO.write(record, OUT, "fasta")
     
     print("New fasta {} written!\n{} of {} headers were not found.".format(out, len(header_hash.keys()), total_headers), file=sys.stderr)
