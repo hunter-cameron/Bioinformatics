@@ -54,5 +54,7 @@ if __name__ == "__main__":
     # generate a list of just sizes from tuple
     lengths = [seq[1] for seq in len_info]
 
+    print("Total base pairs: {}".format(str(sum(lengths))))
+
     #print("\n".join([str(tup) for tup in len_info]))
     make_text_hist(lengths)

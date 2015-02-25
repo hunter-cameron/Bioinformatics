@@ -221,7 +221,7 @@ class JGIEntry(object):
             #print("Skipping downloading...", file=sys.stderr, end="\n\n")
             #return []
 
-            raise DataNotAvailable("No files found for regex: '{}', id: '{}.'".format(file_reg, self.id), file=sys.stderr)
+            raise DataNotAvailable("No files found for regex: '{}', id: '{}.'".format(file_reg, self.id))
 
     def _get_full_URL(self, url):
         """ Adds the base path to the URL """
