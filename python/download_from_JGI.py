@@ -647,11 +647,15 @@ class JGIInterface(object):
 
             print("Downloading {} to\n    {}".format(url, local_path), end="\n\n")
             request = self.session.get(url, stream=True)
-            with open(local_path, 'wb') as fh:
-                for chunk in request.iter_content(chunk_size=1024):
-                    if chunk:  # filter out keep-alive new chunks
-                        fh.write(chunk)
-                        fh.flush()
+            
+            try:
+                with open(local_path, 'wb') as fh:
+                    for chunk in request.iter_content(chunk_size=1024):
+                        if chunk:  # filter out keep-alive new chunks
+                            fh.write(chunk)
+                            fh.flush()
+            except IOError:
+                print("Problem downloading to local path {}".format(local_path), file=sys.stderr)
 
     def check_local_path(self, local_path):
         """ 
