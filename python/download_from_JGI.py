@@ -36,6 +36,8 @@ LOOKUP = 'http://genome.jgi.doe.gov/lookup?'
 
 # This is the url for IMG-ER which might be what I should use because it is the more complete resource according to some folks at JGI.
 IMG_LOOKUP = 'https://img.jgi.doe.gov/cgi-bin/er/main.cgi'
+IMG_DATA = 'https://img.jgi.doe.gov/cgi-bin/er/xml.cgi'
+
 
 # custom exceptions
 class DataNotAvailable(Exception):
@@ -342,7 +344,7 @@ class IMGEntry(object):
     to interact with the CGI on IMG's web portal to download a different set of data.
     """
 
-    DATA_TYPES = ['gbk']
+    DATA_TYPES = ['gbk', 'ko']
 
 
     def __init__(self, parent, id, prefix=""):
@@ -389,6 +391,8 @@ class IMGEntry(object):
         if download_type in self.DATA_TYPES:
             if download_type == 'gbk':
                 gbk_file = self.download_genbank()
+            elif download_type == 'ko':
+                ko_file = self.download_ko()
         else:
             raise ValueError("download_type: {} is not among the acceptable types: {}".format(download_type, str(self.DATA_TYPES)))
 
@@ -416,7 +420,7 @@ class IMGEntry(object):
         if self.prefix:
             local_path = self.prefix + ".gbk"
         else:
-            local_path = self.taxon_id + ".gbk"
+            local_path = self.id + ".gbk"
 
         # check the local path
         if not self.parent.check_local_path(local_path):
@@ -437,7 +441,7 @@ class IMGEntry(object):
 
         try:
             pid = match.group(1)
-            print(("pid", pid))
+            #print(("pid", pid))
         except:
             #print(request.text)
             
@@ -468,6 +472,62 @@ class IMGEntry(object):
             OUT.write(r.text)
 
         print("    Downloaded to {}".format(local_path), file=sys.stderr)
+
+    def download_ko(self):
+        """ Method to download a KO file. This is still experimental. """
+       
+       # get the local path
+        if self.prefix:
+            local_path = self.prefix + ".ko.tsv"
+        else:
+            local_path = self.id + ".ko.tsv"
+
+        # check the local path
+        if not self.parent.check_local_path(local_path):
+            return
+
+        print("\nDownloading ko file for {}.".format(self.id), file=sys.stderr)
+
+        # load the KO Ontology page
+        payload = {     'section': 'TaxonDetail',
+                        'page': 'ko',
+                        'taxon_oid': self.id,
+                    }
+        
+        # generate the table and tmpfile 
+        request = self.parent.session.post(IMG_LOOKUP, data=payload, headers=self.header)
+        
+        # parse out the tmpfile
+        match = re.search("sid=(yui[^&]*)", request.text)
+
+        try:
+            tmpfile = match.group(1)
+        except:
+            raise PortalError("Error finding KO tmpfile at URL\n{}".format(request.url))
+         
+        # generate a new payload with the data required to download
+        payload = {     'section': 'Selection',
+                        'page': 'export',
+                        'tmpfile': tmpfile,
+                        'table': 'KO',
+                        'sort': 'KOID|asc',
+                        'rows': 'all',
+                        'columns': '[{"key":"Select","label":"Select"},{"key":"KOID","label":"KO ID"},{"key":"Name","label":"Name"},{"key":"Definition","label":"Definition"},{"key":"GeneCount","label":"Gene Count"}]',
+                        'c': 'KOID',
+                        'f': '',    # left blank on JGI
+                        't': 'text',
+                        }
+
+
+        # get the file
+        request = self.parent.session.post(IMG_DATA, data=payload, headers=self.header)
+
+        # write it to a file
+        with open(local_path, 'w') as OUT:
+            OUT.write(request.text)
+
+        print("    Downloaded to {}".format(local_path), file=sys.stderr)
+
 
 
 class JGIInterface(object):
@@ -587,11 +647,15 @@ class JGIInterface(object):
 
             print("Downloading {} to\n    {}".format(url, local_path), end="\n\n")
             request = self.session.get(url, stream=True)
-            with open(local_path, 'wb') as fh:
-                for chunk in request.iter_content(chunk_size=1024):
-                    if chunk:  # filter out keep-alive new chunks
-                        fh.write(chunk)
-                        fh.flush()
+            
+            try:
+                with open(local_path, 'wb') as fh:
+                    for chunk in request.iter_content(chunk_size=1024):
+                        if chunk:  # filter out keep-alive new chunks
+                            fh.write(chunk)
+                            fh.flush()
+            except IOError:
+                print("Problem downloading to local path {}".format(local_path), file=sys.stderr)
 
     def check_local_path(self, local_path):
         """ 
@@ -737,7 +801,7 @@ def main(args):
             if args.convert:
                 conv_entry = interface.convert_entry(entry)
                 conv_entry.print_available_files()
-
+    
 if __name__ == "__main__":
 
     os.nice(20)     # give this program lowest priority to give up CPU to others while downloads are going on
