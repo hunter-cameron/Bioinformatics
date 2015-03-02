@@ -1,4 +1,5 @@
 
+from __future__ import print_function   # needed this module to be py2 compatible
 
 import sys
 import argparse
@@ -7,6 +8,7 @@ import difflib
 import pickle
 from Bio import Entrez
 import re
+
 
 # TODO: Incorporate taxstrings lookup functions to allow the lookup of unknown data.
 
@@ -128,6 +130,24 @@ class TaxTree(object):
         return taxonomy
 
 
+    def lookup_single_tax(self, tax):
+        """ 
+        I needed a way to look up a single tax term (with no rank info)
+        so this function was born. It may be incorporated into one of the other
+        lookup methods in the future.
+        """
+        matches = []
+        for node in self.taxnodes.values():
+            if node.name.lower() == tax.lower():
+                matches.append(node)
+
+        if len(matches) == 1:
+            return matches[0]
+        elif len(matches) < 1:
+            raise LookupError("Tax: {} was not found in the tree.".format(tax))
+        elif len(matches) > 1:
+            raise LookupError("Tax: {} returned multiple matches in the tree.".format(tax))
+
     def lookup_taxstring(self, taxstring):
         """ 
         Attempts to lookup a TaxNode by a taxstring.
@@ -147,8 +167,6 @@ class TaxTree(object):
         for rank in reversed(TaxTree.taxRanks):
             if rank in taxonomy:
                 for node in self.taxnodes.values():
-                    # match name -- should make these both the same case but that would take more time
-                    # on an already terrible algorithm
                     if node.name.lower() == taxonomy[rank].lower():
                         # match rank
                         if node.rank == rank:
@@ -388,6 +406,9 @@ class TaxNode(object):
         If the rank is not available for the instance (even if only because the rank is misspelled, ex: speces) the "null" value will be returned. If there is no null value, an AssertionError is raised.
 
         """
+        # swap synonyms 
+        if rank == "domain":
+            rank = "kingdom"
 
         for r, name in self.get_taxonomy():
             if r == rank:
