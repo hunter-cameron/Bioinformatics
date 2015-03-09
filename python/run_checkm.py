@@ -8,7 +8,13 @@ import sys
 import json
 from mypyli import taxtree       # mypyli built using python3 so this may not work
 
-def main(fasta, gbk, out, processors, tree=None):
+class TaxonomyError(Exception):
+    def __init__(self, message, target=None):
+        self.message = message
+        self.target = target
+
+
+def main(fasta_f, tax_f, taxonly, out, processors, tree=None):
     # change default printing to err for working steps
     stdout = sys.stdout
     sys.stdout = sys.stderr
@@ -18,39 +24,29 @@ def main(fasta, gbk, out, processors, tree=None):
         print("Output path {} is not a directory".format(out))
         sys.exit(1)
 
+ 
     # get lists of the files to be used (by reading directory if necessary)
-    
-    fasta_files = []
-    if os.path.isdir(fasta):
-        fasta_files = process_dir(fasta, "fasta")
-    elif os.path.isfile(fasta):
-        fasta_files.append(fasta)
-    else:
-        print("Path {} is neither a file nor directory.".format(fasta))
-        sys.exit(1)
+    fasta_files = read_file_or_dir(fasta_f, ext="fasta")
 
     # make single element tuples if gbk isn't specified
-    if not gbk:
-        genomes = [(fasta,) for fasta in fasta_files]
+    if not tax_f:
+        fasta_tax = [(fasta, None) for fasta in fasta_files]
     else:
-        gbk_files = []
-        if os.path.isdir(gbk):
-            gbk_files = process_dir(gbk, "gbk")
-        elif os.path.isfile(gbk):
-            gbk_files.append(gbk)
+        if taxonly:
+            fasta_tax = link_fasta_w_tax(fasta_files, tax_f, tree=tree)
         else:
-            print("Path {} is neither a file nor directory.".format(gbk))
-            sys.exit(1)
+            gbk_files = read_file_or_dir(tax_f, ext="gbk")
     
-        # link each fasta with its genbank
-        genomes = link_fasta_w_gbk(fasta_files, gbk_files)
-    
+            # link each fasta with its genbank derived taxonomy
+            fasta_tax = link_fasta_w_gbk(fasta_files, gbk_files, tree=tree)
+   
+
     output_paths = []
-    for genome in genomes:
-        print("Processing genome: {}".format(genome[0]))
-            
+    for fasta, taxonomy in fasta_tax:
+        print("Processing genome: {}".format(fasta))
+        
         # make output directory
-        out_path = out + "/" + get_basename(genome[0]) + "/"
+        out_path = out + "/" + get_basename(fasta) + "/"
         if not os.path.isdir(out_path):
             os.mkdir(out_path)
 
@@ -60,13 +56,12 @@ def main(fasta, gbk, out, processors, tree=None):
             output_paths.append(out_path)
             continue
 
-        # link the fasta to the folder if it isn't already
-        test_fasta = process_dir(out_path, "fasta")
-        subprocess.call(["ln", "-sf", genome[0], out_path])
+        # link the fasta to the folder if it isn't already -- this will overwrite files by the same name
+        subprocess.call(["ln", "-sf", fasta, out_path])
         
-        if gbk:
+        if tax_f:
             # begin trying to run CheckM, starting at the lowest taxonomic level
-            for level in reversed(get_tax_from_gbk(genome[1], tree)):
+            for level in reversed(taxonomy):
                 print("  Running checkm with taxonomy: {} {}.".format(level[0], level[1]))
                 rtn_code = run_checkm(level, out_path, processors)
                 # exit loop if no error use next tax level if error
@@ -79,8 +74,9 @@ def main(fasta, gbk, out, processors, tree=None):
     
             else:
                 print("  Already at highest level. Genome cannot be processed")
-                print("Processing genome: {} failed.".format(genome[0]), file=stdout)
+                print("Processing genome: {} failed.".format(fasta), file=stdout)
 
+        # if no tax info, run using lineage_wf
         else:
             print("Running checkm using lineage_wf.")
             rtn_code = run_checkm(rank_taxon=None, fasta_bin=out_path, processors=processors)
@@ -89,7 +85,7 @@ def main(fasta, gbk, out, processors, tree=None):
                 output_paths.append(out_path)
             else:
                 print("  CheckM encountered an error. Genome cannot be processed")
-                print("Processing genome: {} failed.".format(genome[0]), file=stdout)
+                print("Processing genome: {} failed.".format(fasta), file=stdout)
                 
 
     # merge all results into a single file 
@@ -101,27 +97,57 @@ def main(fasta, gbk, out, processors, tree=None):
 
     print("\n\nFinished.", file=stdout)
 
-def process_dir(directory, ext):
-    """ Returns a list of files with the given ext from a directory """
-    local_files = os.listdir(directory)
-    return [directory + "/" + file for file in local_files if file.endswith(".{}".format(ext))]
+def read_file_or_dir(path, ext=None):
+    """ 
+    Takes a directory or file and if it is a directory, returns
+    a list of files in that directory with the specified ext.
+    If it is a file, returns the filename in list context.
+    """
 
-def link_fasta_w_gbk(fasta_files, gbk_files):
-    """ Matches the fasta and gbk files based on name similarity and returns a list of tuples of matched files"""
     files = []
+    if os.path.isdir(path):
+        if not ext:
+            raise ValueError("Path {} is a directory and no extension was provided")
+        files = os.listdir(path)
+        files = [path + "/" + file for file in files if file.endswith(".{}".format(ext))]
+        if files:
+            return files
+        else:
+            raise ValueError("No files with ext {} found at path {}".format(ext, path)) 
+
+    elif os.path.isfile(path):
+        return [path]
+    else:
+        raise IOError("Path {} is neither a file nor directory.".format(path))
+
+
+
+# functions to link the fasta with the gbk and get the taxonomy
+def link_fasta_w_gbk(fasta_files, gbk_files, tree=None):
+    """ 
+    Matches the fasta and gbk files based on name similarity and parses the taxonomy from the gbk files
+    Returns a list of tuples, (fasta_name, [taxonomy])
+
+    Raises: TaxonomyError
+    """
+    fasta_tax = []
     for fasta in fasta_files:
 
         f_base = get_basename(fasta)
         for gbk in gbk_files:
             g_base = get_basename(gbk)
             if f_base == g_base:
-                files.append((fasta, gbk))
+                try:
+                    fasta_tax.append((fasta, get_tax_from_gbk(gbk, tree=tree)))
+                except:     # I just want to catch all errors with taxonomy parsing
+                    print("  Taxonomy could not be found in gbk: {}".format(gbk))
+                    print("  Skipping genome...")
                 break
         else:
-            print("No gbk match found for fasta: {}".format(fasta))
-            print("Skipping...")
+            print("  No gbk match found for fasta: {}".format(fasta))
+            print("  Skipping genome...")
 
-    return files
+    return fasta_tax
 
 def get_basename(path):
     basename = os.path.basename(path)
@@ -161,11 +187,7 @@ def get_tax_from_gbk(gbk_file, tree=None):
                     # this line just gets the first word after a double quote
                     tax_string = line.split('"')[1].split(" ")[0]
                     print("  Organism found: {}.".format(tax_string))
-                    try:
-                        tax_obj = tree.lookup_single_tax(tax_string)
-                    except LookupError:
-                        print(" Lookup failed. Running CheckM will fail.")
-                        return [("none", "none")]
+                    tax_obj = tree.lookup_single_tax(tax_string)
                     rank_tax = []
                     # look up taxonomy by rank, break at first undefined
                     for rank in ["domain", "phylum", "class", "order", "family", "genus", "species"]:
@@ -183,6 +205,40 @@ def get_tax_from_gbk(gbk_file, tree=None):
             rank_tax.append((rank, tax))
 
         return rank_tax
+
+# function to link fasta with tab delimited tax
+def link_fasta_w_tax(fasta_files, tax_f, tree=None):
+    name_to_tax = {}
+    with open(tax_f, 'r') as IN:
+        for line in IN:
+            fasta, taxstring = line[:-1].split("\t")
+            name_to_tax[fasta] = taxstring
+
+    fasta_tax = []
+    for fasta in fasta_files:
+        try:
+            taxstring = name_to_tax[get_basename(fasta)]
+        except KeyError:
+            print("  No taxonomy match found for fasta: {}".format(fasta))
+            print("  Skipping genome...")
+            continue
+
+        if tree:
+            rank_tax = []
+            node = tree.lookup_taxstring(taxstring)
+            for rank in ["domain", "phylum", "class", "order", "family", "genus", "species"]:
+                        
+                tax = node.get_tax_at_rank(rank, null="")
+                if tax:
+                    rank_tax.append((rank, tax))
+                else:
+                    break
+            #print("  Found lineage in taxtree {}".format(node.get_tax_string()))
+            fasta_tax.append((fasta, rank_tax))
+        else:
+            raise NotImplementedError("Currently a taxtree is required to parse tax files")
+
+    return fasta_tax
 
 def merge_ext_files(output_f, ext_paths):
     """ Merges any number of checkm ext files to a single path"""
@@ -203,6 +259,7 @@ def run_checkm(rank_taxon, fasta_bin, processors=1):
     """ Tries to run checkm tax_wf and returns the error code generated. """
 
     if rank_taxon:
+
         return subprocess.call(["checkm", "taxonomy_wf",
                             "-x", "fasta",
                             "-t", str(processors),
@@ -219,12 +276,15 @@ def run_checkm(rank_taxon, fasta_bin, processors=1):
                             stdout=open(fasta_bin + "stdout_checkm", 'w'),
                             stderr=open(fasta_bin + "stderr_checkm", 'w'))
 
+
+
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Runs CheckM in taxonomy_wf mode for the lowest taxonomy possible based on a gbk file. Alternatively, if the -gbk option is left blank, this program will run CheckM in lineage_wf. Both workflows check first if the isolate has already been completed (and skip it is so) and yield a concatenated file of all data at the end.")
 
     parser.add_argument("-fasta", type=str, help="single fasta file or folder of fasta files (ext: .fasta)", required=True)
-    parser.add_argument("-gbk", type=str, help="single gbk file or folder of gbk files (ext: .gbk) to use for parsing taxonomy")
+    parser.add_argument("-tax", type=str, help="single gbk file or folder of gbk files (ext: .gbk) to use for parsing taxonomy")
+    parser.add_argument("-taxonly", help="flag to specify that the tax argument isn't a gbk file but a tab delim file of fasta and taxstring", action='store_true')
     parser.add_argument("-out", type=str, help="directory prefix for results (defaults to current directory)", default=os.getcwd())
     parser.add_argument("-n", type=int, help="number of processors", required=True)
     parser.add_argument("-tree", type=str, help="taxtree pickled tree to load to lookup taxonomies of genomes without the ORGANISM line in the GenBank")
@@ -235,4 +295,5 @@ if __name__ == "__main__":
     else:
         tree=None
 
-    main(args.fasta, args.gbk, args.out, args.n, tree)
+
+    main(args.fasta, args.tax, args.taxonly, args.out, args.n, tree)
