@@ -119,7 +119,7 @@ class TaxTree(object):
 
             else:
                 print("Warning! Rank tags (k__, s__, etc) were not found for {}. Assigning taxonomy in order.".format(taxstring), file=sys.stderr)
-                rnks = TaxTree.taxRanks.copy()
+                rnks = TaxTree.taxRanks[:]
                 for level in tax_levels:
                     try:
                         rank = rnks.pop(0)
@@ -162,8 +162,7 @@ class TaxTree(object):
         try:
             taxonomy = self._taxstring2dict(taxstring)
         except:
-            raise
-
+            raise 
         for rank in reversed(TaxTree.taxRanks):
             if rank in taxonomy:
                 for node in self.taxnodes.values():

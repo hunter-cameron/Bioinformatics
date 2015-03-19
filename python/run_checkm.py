@@ -92,8 +92,12 @@ def main(fasta_f, tax_f, taxonly, out, processors, tree=None):
     out_ext = out + "/bin_stats_ext.tsv"
     print("\n\nConcatenating all the output results to {}".format(out_ext), file=stdout)
     # add the file to the output root
-    output_paths = [path + "/storage/bin_stats_ext.tsv" for path in output_paths]
-    merge_ext_files(out_ext, output_paths)
+
+    bin_stat_paths = [path + "/storage/bin_stats_ext.tsv" for path in output_paths]
+    merge_ext_files(out_ext, bin_stat_paths)
+
+    marker_paths = [path + "/storage/marker_gene_stats.tsv" for path in output_paths]
+    merge_ext_files(out + "/marker_gene_stats.tsv", marker_paths)
 
     print("\n\nFinished.", file=stdout)
 
@@ -225,7 +229,13 @@ def link_fasta_w_tax(fasta_files, tax_f, tree=None):
 
         if tree:
             rank_tax = []
-            node = tree.lookup_taxstring(taxstring)
+            try:
+                node = tree.lookup_single_tax(taxstring)
+            except LookupError as e:
+                print(e, file=sys.stderr)
+                print("Single tax lookup failed. Trying whole lookup.", file=sys.stderr)
+                node = tree.lookup_taxstring(taxstring)
+
             for rank in ["domain", "phylum", "class", "order", "family", "genus", "species"]:
                         
                 tax = node.get_tax_at_rank(rank, null="")
@@ -284,7 +294,7 @@ if __name__ == "__main__":
 
     parser.add_argument("-fasta", type=str, help="single fasta file or folder of fasta files (ext: .fasta)", required=True)
     parser.add_argument("-tax", type=str, help="single gbk file or folder of gbk files (ext: .gbk) to use for parsing taxonomy")
-    parser.add_argument("-taxonly", help="flag to specify that the tax argument isn't a gbk file but a tab delim file of fasta and taxstring", action='store_true')
+    parser.add_argument("-taxonly", help="flag to specify that the tax argument isn't a gbk file but a tab delim file of basename fasta and taxstring", action='store_true')
     parser.add_argument("-out", type=str, help="directory prefix for results (defaults to current directory)", default=os.getcwd())
     parser.add_argument("-n", type=int, help="number of processors", required=True)
     parser.add_argument("-tree", type=str, help="taxtree pickled tree to load to lookup taxonomies of genomes without the ORGANISM line in the GenBank")

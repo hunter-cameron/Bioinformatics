@@ -1,53 +1,112 @@
 
+import re
+import sys
 
-class SamParser(object):
-    """ A class for parsing SAM files """
-    def __init__(self, sam_f, aligned_only=False, mapq=1, mismatches=1):
-        self.sam_f = sam_f
-        self.qc = {'aligned_only': aligned_only, 'mapq': mapq, 'tag_filter': {'NM:i': mismatches}}
-   
-    def _keep_alignment(self, aln):
-        # eliminate unmapped reads
-        if self.qc['aligned_only']:
-            if aln['flag'] == '4':
-                return False
+def parse(sam_fh, aligned_only=False, mapq=1):
+    for line in sam_fh:
+        if line.startswith("@"):
+            continue
+        # store all the basic sam attributes
+        aln_dict = {k: v for k, v in zip(['qname', 'flag', 'rname', 'pos', 'mapq', 'cigar', 'rnext', 'pnext', 'tlen', 'seq', 'qual'], line[:-1].split('\t')[:11])}
 
-        # eliminate reads that are not unique enough based on mapping quality
-        if self.qc['mapq']:
-            if aln['mapq'] <= self.qc['mapq']:
-                return False
+        aln_dict['pos'] = int(aln_dict['pos'])
+        aln_dict['mapq'] = int(aln_dict['mapq'])
+        aln_dict['flag'] = int(aln_dict['flag'])
 
-        # eliminate reads based on their optional tags; assumes desire is to be below the value
-        for tag, value in self.qc['tag_filter'].items():
-            if aln.get(tag, 0):
-                if aln[tag] <= value:
-                    return False
+        # store the optional attribs
+        aln_dict.update({'op_fields': line[:-1].split("\t")[11:]})
 
-        return True
+        if aligned_only:
+            if aln_dict['flag'] == 4:
+                continue
+        
+        if aln_dict['mapq'] < mapq:
+            continue
+
+        yield SamRecord(aln_dict)
+
+def parse_headers(sam_fh):
+    headers = {'seqs': {}}
+    for line in sam_fh:
+        if line.startswith("@"):
+
+            if line.startswith("@SQ"):
+                sn, ln = line.split("\t")[1:]
+                name = sn[3:]
+                length = ln[3:]
+                headers['seqs'][name] = int(length)
+        else:
+            return headers
+
+
+class SamRecord(object):
+    """ 
+    A single read in a SAM file
+    
+    Attributes are added as needed to completely minimize computation (nothing
+    unnecessary computed, no computations performed twice)
+    """
+
+    def __init__(self, attrib):
+        for k, v in attrib.items():
+            setattr(self, k, v)
+
+        if self.flag == 4:
+            self.mapped = False
+        else:
+            self.mapped = True
+
+        # hidden attributes to hold calculated values
+        self._length = None
+        self._matches = None
+        self._perc_id = None
+
+    @property
+    def length(self):
+        if self._length is None:
+            self.length = len(self.seq)
+
+        return self._length
+    @length.setter
+    def length(self, value):
+        self._length = value
+
+    @property
+    def matches(self):
+        """ 
+        Right now this just looks for matches in the Cigar string of
+        SAM cigar format 1.4
+        """
+        if self._matches is None:
+            if "=" in self.cigar:       # sam 1.4
+                m = re.findall("(\d+[MIDNSHP=X])", self.cigar)
                 
-             
+                if m:
+                    matches = 0
+                    for group in m:
+                        if group[-1] == "=":
+                            matches += int(group[:-1])
 
-    def parse_sam_file(self, iterate=True):
-        """
-        SAM generator that makes a SamAlignment for desired alignments in a file.
-        Could be a class method in SamAlignment instead but that might seem counter-intuitive to call
-        """
+                    self.matches = matches
+                else:
+                    raise ValueError("Cigar string {} could not be parsed. It may be malformed.".format(self.cigar))
+            else:
+                raise NotImplementedError("Right now, this requires SAM format 1.4")
 
-        with open(self.sam_f, 'r') as IN:
-            for line in IN:
-                if line.startswith("@"):
-                    continue
-                # store all the basic sam attributes
-                aln_dict = {k: v for k, v in zip(['qname', 'flag', 'rname', 'pos', 'mapq', 'cigar', 'rnext', 'pnext', 'tlen', 'seq', 'qual'], line[:-1].split('\t')[:10])}
+        return self._matches
+    @matches.setter
+    def matches(self, value):
+        self._matches = value
+    
+    @property
+    def perc_id(self):
+        if self._perc_id is None:
+            self.perc_id = (self.matches / self.length)
 
-                aln_dict['pos'] = int(aln_dict['pos'])
-                aln_dict['mapq'] = int(aln_dict['mapq'])
+        return self._perc_id
+    @perc_id.setter
+    def perc_id(self, value):
+        self._perc_id = value
 
-                if self._keep_alignment(aln_dict):
-
-                    if iterate:
-                        yield aln_dict
-                    else:
-                        alignments.append(aln_dict)
-
+    
 

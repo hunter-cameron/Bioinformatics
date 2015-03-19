@@ -1,0 +1,60 @@
+java -Djava.library.path=/nas02/apps/bbmap-34.56/bbmap/jni/ -ea -Xmx23449m -cp /nas02/apps/bbmap-34.56/bbmap/current/ align2.BBMapPacBio build=1 overwrite=true minratio=0.40 fastareadlen=6000 ambiguous=best minscaf=100 startpad=10000 stoppad=10000 midpad=6000 ref=/netscr/hjcamero/ps_assembly/CL_Col_mCL_r1_full_pipe/final_assembly.fasta in=/netscr/hjcamero/king_cake/spike_in/genes/79.genes.fna local=f ordered=t nodisk sam=1.4 threads=4 out=king.sam
+Executing align2.BBMapPacBio [build=1, overwrite=true, minratio=0.40, fastareadlen=6000, ambiguous=best, minscaf=100, startpad=10000, stoppad=10000, midpad=6000, ref=/netscr/hjcamero/ps_assembly/CL_Col_mCL_r1_full_pipe/final_assembly.fasta, in=/netscr/hjcamero/king_cake/spike_in/genes/79.genes.fna, local=f, ordered=t, nodisk, sam=1.4, threads=4, out=king.sam]
+
+BBMap version 34.56
+Set MINIMUM_ALIGNMENT_SCORE_RATIO to 0.400
+Set OUTPUT_ORDERED_READS to true
+Set threads to 4
+Retaining first best site only for ambiguous mappings.
+Executing dna.FastaToChromArrays2 [/netscr/hjcamero/ps_assembly/CL_Col_mCL_r1_full_pipe/final_assembly.fasta, 1, writeinthread=false, genscaffoldinfo=true, retain, waitforwriting=false, gz=true, maxlen=536670912, writechroms=false, minscaf=100, midpad=6000, startpad=10000, stoppad=10000, nodisk=true]
+
+Set genScaffoldInfo=true
+Set genome to 1
+
+Loaded Reference:	0.136 seconds.
+Loading index for chunk 1-1, build 1
+Indexing threads started for block 0-1
+Indexing threads finished for block 0-1
+Generated Index:	7.208 seconds.
+Analyzed Index:   	0.866 seconds.
+Started output stream:	0.103 seconds.
+Cleared Memory:    	0.251 seconds.
+Processing reads in single-ended mode.
+Started read stream.
+Started 4 mapping threads.
+Detecting finished threads: 0, 1, 2, 3
+
+   ------------------   Results   ------------------   
+
+Genome:                	1
+Key Length:            	12
+Max Indel:             	100
+Minimum Score Ratio:  	0.4
+Mapping Mode:         	normal
+Reads Used:           	4439	(4477305 bases)
+
+Mapping:          	216.941 seconds.
+Reads/sec:       	20.46
+kBases/sec:      	20.64
+
+
+Read 1 data:      	pct reads	num reads 	pct bases	   num bases
+
+mapped:          	 58.3014% 	     2588 	 60.0917% 	     2690488
+unambiguous:     	 51.7909% 	     2299 	 55.4057% 	     2480684
+ambiguous:       	  6.5105% 	      289 	  4.6859% 	      209804
+low-Q discards:  	  0.0000% 	        0 	  0.0000% 	           0
+
+perfect best site:	  0.8110% 	       36 	  0.0623% 	        2789
+semiperfect site:	  0.8110% 	       36 	  0.0623% 	        2789
+
+Match Rate:      	      NA 	       NA 	 80.0632% 	     2186362
+Error Rate:      	 73.8854% 	     2552 	 19.6737% 	      537249
+Sub Rate:        	 73.8854% 	     2552 	 16.9166% 	      461959
+Del Rate:        	 51.5055% 	     1779 	  1.4761% 	       40308
+Ins Rate:        	 54.2270% 	     1873 	  1.2810% 	       34982
+N Rate:          	  1.9398% 	       67 	  0.2631% 	        7185
+
+Total time:     	240.514 seconds.
+Running:
+    mapPacBio.sh ref=/netscr/hjcamero/ps_assembly/CL_Col_mCL_r1_full_pipe/final_assembly.fasta in=/netscr/hjcamero/king_cake/spike_in/genes/79.genes.fna local=f ordered=t nodisk sam=1.4 threads=4 out=king.sam
