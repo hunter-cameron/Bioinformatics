@@ -116,7 +116,6 @@ class FastxIter(object):
         self.finished = False
         self.queue = queue.Queue(maxsize=1000)
 
-
     def get_seqs(self, num_seqs):
         seqs = []
         for i in range(num_seqs):
@@ -131,12 +130,11 @@ class FastxIter(object):
         #print(seqs)
         return seqs
 
-
     def process_seqs(self):
         """ Process seqs in chunks and adds them to the queue. Should be threaded. """
         
+        chunks = ""
         if self.reverse:
-            #print("reverse")
             leftovers = []
             for chunk in self._iter_reverse():
                 # split the chunk into lines and add the leftover lines from
@@ -162,7 +160,6 @@ class FastxIter(object):
                         start, end = start + orphan_lines -1, end + orphan_lines -1
                     
                     self.queue.put("\n".join(lines[start:end]))
-                #print("Added {} reverse seqs to queue.".format(str(seqs)))
 
                 # add lines that weren't a full seq to leftovers
                 leftovers = lines[0:orphan_lines]
@@ -174,7 +171,7 @@ class FastxIter(object):
                 # split the chunk into lines and add the leftover lines from
                 # the last chunk
                 lines = chunk.split("\n")
-                lines += leftovers
+                lines = leftovers + lines
 
                 seqs = int(len(lines) / self.lines_per_seq)
 
@@ -191,6 +188,10 @@ class FastxIter(object):
         self.finished = True
 
     def _iter_reverse(self):
+        """ Iters chunks of a file in reverse order. 
+        Each chunk is guaranteed to have a full line of text.
+        The last line in the chunk will not have a new line character.
+        """
         self.fh.seek(0, 2)
         position = self.fh.tell()
 
@@ -211,9 +212,11 @@ class FastxIter(object):
             except ValueError:      # entire chunk has no newline
                 first_line = chunk.split("\n", 1)
                 prev_line = first_line[0] + prev_line
+                continue
         
         # yield the first line in the file
-        yield prev_line
+        if prev_line:
+            yield prev_line
 
     def _iter_forward(self):
         position = 0
@@ -236,9 +239,12 @@ class FastxIter(object):
             except ValueError:      # entire chunk has no newline
                 last_line = chunk.rsplit("\n", 1)
                 prev_line += last_line[0]
+                continue        # this continue with the while essentially 
+                                # makes this recursive
 
         # yield the last line in the file
-        yield prev_line
+        if prev_line:
+            yield prev_line
 
 
 
@@ -253,7 +259,6 @@ def shuffle_seqs(fast_f, lines_per_seq, num_subfiles=6):
             # pick number of seqs to write
             if seqs_remaining == 0:
                 seqs_remaining = random.randint(1, 50)
-
 
             # collect the lines from one sequence
             try:
@@ -297,12 +302,13 @@ def rewrite_fasta(lines_per_seq, fasta):
     OUT = open("fwd.fasta", 'w')
     first = True
     while f_iter:
-        num_seqs = 1
+        num_seqs = random.randint(0, 25)
         try:
             to_write = f_iter.get_seqs(num_seqs)
         except GeneratorExit:   # remove the iter if it is done
             print("Queue finished, removing.")
             f_iter = False
+            break
      
         #print(to_write)
         if to_write:    # check if there is anything
@@ -314,7 +320,7 @@ def rewrite_fasta(lines_per_seq, fasta):
                 first = False
             else:
                 OUT.write("\n" + "\n".join(to_write))
-
+    OUT.write("\n")     # must write a \n for the last line
     OUT.close()
 
 
@@ -327,6 +333,7 @@ def rewrite_fasta(lines_per_seq, fasta):
         except GeneratorExit:   # remove the iter if it is done
             print("Queue finished, removing.")
             f_iter_r = False
+            break
      
         #print(to_write)
         if to_write:    # check if there is anything
@@ -338,11 +345,12 @@ def rewrite_fasta(lines_per_seq, fasta):
                 first = False
             else:
                 OUT.write("\n" + "\n".join(to_write))
-
-
+    OUT.write("\n")
+    
 
 def random_merge(lines_per_seq, num_subfiles, outfile):
-   
+  
+    # submit all the split files for processing
     iters = []
     for i in range(num_subfiles):
         if random.randint(0, 1):
@@ -351,42 +359,38 @@ def random_merge(lines_per_seq, num_subfiles, outfile):
             #print(i)
             f_iter = FastxIter("shuf_subf{}.fastx".format(str(i)), lines_per_seq, reverse=False)
 
-
         f_iter.process_seqs()
        
         iters.append(f_iter)
 
-        #p = multiprocessing.Process(target=f_iter.process_seqs())
-        #p.start()
-       
-        #processes.append(p)
-
+    # write the new file
     with open(outfile, 'w') as OUT:
         first = True
         while iters:
+
+            # pick a random sequence iter and a random number of sequences
             iter_indx = random.randint(0, len(iters) - 1)
             num_seqs = random.randint(0, 25)
             try:
+                # get seqs may not necessarily return the number of 
+                # seqs asked for if it runs out of sequences
                 to_write = iters[iter_indx].get_seqs(num_seqs)
-                print("Wrote {} seqs from iter {}".format(str(num_seqs), str(iter_indx)))
+                #print("Wrote {} seqs from iter {}".format(str(len(to_write)), str(iter_indx)))
             except GeneratorExit:   # remove the iter if it is done
-                print("Queue finished, removing.")
-                
+                #print("Queue finished, removing.")
                 iters.pop(iter_indx)
+                continue
         
         #print(to_write)
             if to_write:    # check if there is anything
-                if len([line for line in "\n".join(to_write).split("\n")]) % 8:
-                    #print(to_write)
-                    print()
                 if first:   # check if first, if so don't new line
                     OUT.write("\n".join(to_write))
                     first = False
                 else:
                     OUT.write("\n" + "\n".join(to_write))
-
-    #for p in processes:
-        #p.join()
+        
+        # write the final new line
+        OUT.write("\n")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -396,7 +400,7 @@ if __name__ == "__main__":
     parser.add_argument("-o", help="name for out file", required=True)
     args = parser.parse_args()
 
-    #shuffle_seqs(args.f, args.n, args.s)
-    rewrite_fasta(args.n, args.f)
+    shuffle_seqs(args.f, args.n, args.s)
+    #rewrite_fasta(args.n, args.f)
 
-    #random_merge(args.n, args.s, args.o)
+    random_merge(args.n, args.s, args.o)
