@@ -60,6 +60,19 @@ class King(object):
 
         return found / total
 
+    def get_fraction_in_order(self):
+        for contig in self.contigs.values():
+            contig.find_index_ordered()
+        
+        ordered = 0
+        total = 0
+        for piece in self.get_pieces():
+            if piece.f_ordered:
+                ordered += 1
+            total += 1
+
+        return ordered / total
+
 
 class KingContig(object):
     def __str__(self):
@@ -86,8 +99,9 @@ class KingContig(object):
         return self.pieces[str(index)]
 
     def get_pieces(self):
-        for piece in self.pieces.values():
-            yield piece
+        """ Yields sorted pieces """
+        for piece in sorted(self.pieces, key=lambda k: self.pieces[k].index):
+            yield self.pieces[piece]
 
     def reconstruct(self):
         """ 
@@ -105,6 +119,73 @@ class KingContig(object):
 
         return mapped_ranges
 
+    def find_index_ordered(self):
+        pieces = [piece for piece in self.get_pieces()]
+        
+        prev = None
+        curr = None
+        nfound = False
+        next = 0
+
+        while True:
+
+            # skip to the next found piece
+            while nfound is False:
+                next += 1
+                try:
+                    nfound = pieces[next].found
+                except IndexError:      # this is the signal to exit
+                    nfound = True
+                    next = None
+
+            # in general, I want to check if the previous piece and the
+            # next piece have the correct relation to the current piece
+            # to begin with I'll assume they do not
+            p = False
+            n = False
+        
+            if curr is not None:
+                #print(("curr", curr))
+                #print("cnode, " + str(pieces[curr].cnode))
+                #print("indx, " + str(CakeNode.contigs[pieces[curr].cnode.contig].index(pieces[curr].cnode)) + "/" + str(len(CakeNode.contigs[pieces[curr].cnode.contig]) - 1))
+                ### check prev
+                if prev is not None:
+                    if pieces[curr].cnode.is_beside(pieces[prev].cnode):
+                        p = True
+                        #print("pmatch")
+                    else:   # check for contig break in cake
+                        if pieces[prev].cnode.is_terminal() and pieces[curr].cnode.is_terminal():
+                            p = True
+                            #print("pbreak")
+                        
+                else:       # is there is no prev, that is ok
+                    p = True
+                    #print("pnone")
+
+                ### check next
+                if next is not None:
+                    if pieces[curr].cnode.is_beside(pieces[next].cnode):
+                        n = True
+                        #print("nmatch")
+                    else:
+                        if pieces[curr].cnode.is_terminal() and pieces[next].cnode.is_terminal():
+                            n = True
+                            #print("nbreak")
+                else:       # if there is no next, that is ok
+                    n = True
+                    #print("nnone")
+
+                pieces[curr].f_ordered = p and n
+
+                #print(pieces[curr].f_ordered)
+                #print()
+            # increment/reset counters
+            if next is None:
+                break
+            prev = curr
+            curr = next
+            nfound = False
+                        
 
 class KingPiece(object):
     def __str__(self):
@@ -121,13 +202,13 @@ class KingPiece(object):
         self.end = end              # SAM uses 1 based coords, but no need to add 1 b/c 
                                     # SAM is inclusive and the top bound in python is not
 
+        # attributes reserved for when (if) the node is found
         self.found = False
-        self.f_contig = None
-        self.f_start = None
-        self.f_end = None
+        self.cnode = None
         self.f_identity = None
-
-    def is_adjacent_to(self, piece):
+        self.f_ordered = None
+ 
+    def is_beside(self, piece):
         """ Determines if one piece is adjacent to another (ascending or descending) """
         return self.contig == piece.contig and self.index in [piece.index - 1, piece.index + 1]
 
@@ -180,8 +261,94 @@ class CakeContig(object):
                 if piece.f_start != alignment[-1].f_end + 1:
                     alignment.append((f_end + 1, piece.f_start -1))
 
+class CakeNode(object):
+    
+    contigs = {}
+    indexed = False
+    
+    @classmethod
+    def _add_node(cls, node):
+        """ Add the node if it doesn't exist."""
+        cls.contigs[node.contig] = cls.contigs.get(node.contig, [])
+
+        if node in cls.contigs[node.contig]:
+            cls.contigs[node.contig].append(node)
+            #raise NotImplementedError("Duplicated nodes are not currently allowed.")
+        else:
+            cls.contigs[node.contig].append(node)
+
+    @classmethod
+    def index_nodes(cls):
+        """ Sort the nodes and set the prev and next attributes of each """
+        for contig in cls.contigs:
+            cls.contigs[contig].sort()
+            for indx, node in enumerate(cls.contigs[contig]):
+                if indx > 0:
+                    node.prev = cls.contigs[contig][indx-1]
+                if indx < len(cls.contigs[contig]) - 1:
+                    node.next = cls.contigs[contig][indx+1]
+
+            #[print(node) for node in cls.contigs[contig]]
+
+        cls.indexed = True
+
+    def __init__(self, contig, start, end, piece):
+        self.piece = piece
+        self.contig = contig
+        self.start = start
+        self.end = end
+
+        self._add_node(self)
+
+        self.prev = None
+        self.next = None
+
+    def __str__(self):
+        return "CakeNode - {}, {}-{}".format(self.contig, str(self.start), str(self.end))
+
+    # comparison operator overloads
+    def __eq__(self, other):
+        return (self.contig == other.contig) and (self.start == other.start)
+
+    def __ne__(self, other):
+        return not self == other
+    
+    def __lt__(self, other):
+        if self.contig == other.contig:
+            return self.start < other.start
+        else:
+            return self.contig < other.contig
+
+    def __le__(self, other):
+        return not other < self
+
+    def __gt__(self, other):
+        if self.contig == other.contig:
+            return self.start > other.start
+        else:
+            return self.contig > other.contig
+    
+    def __ge__(self, other):
+        return not self < other
+
+    def is_beside(self, other):
+        beside = []
+        if self.prev:
+            beside.append(self.prev)
+        if self.next:
+            beside.append(self.next)
+
+        return other in beside
 
 
+    def is_at_end(self):
+        return self.contigs[self.contig][-1] == self
+
+    def is_at_beginning(self):
+        return self.contigs[self.contig][0] == self
+
+    def is_terminal(self):
+        return self.is_at_beginning() or self.is_at_end()
 
 def build_king(fasta_f, regex):
     """ 
@@ -292,17 +459,14 @@ def find_pieces(sam_f, king, regex):
                 
                 piece = king.lookup_piece(contig, index)
 
+                # make the CakeNode
+                cnode = CakeNode(record.rname, record.pos, record.pos + record.length, piece)
+
                 # register the piece as found
                 piece.found = True
-                piece.f_contig = record.rname
-                piece.f_start = record.pos
-                piece.f_end = record.length
+                piece.cnode = cnode
                 piece.f_identity = record.perc_id
       
-                # add the king piece to the cake
-                #cake = CakeContig.lookup_contig(record.rname)
-                #cake.add_king_piece(piece)
-
 
 def reconstruct_king(king):
     king_assembly = []
@@ -321,10 +485,13 @@ def gene_pipeline(args):
 
     find_pieces(sam_f, king, regex=regex)
     
+    CakeNode.index_nodes()
+
     # use the name to print the results
     fasn = os.path.splitext(args.a)[0]
 
     print("{}\t{}".format(fasn, str(king.get_fraction_found(minid=.95) * 100)))
+    print("{}\t{}".format(fasn, str(king.get_fraction_in_order() * 100)))
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Looks for the information from a trusted genome assembly in a metagenome by chopping the trusted genome into pieces of length -l and searching for them in the metagenome.")

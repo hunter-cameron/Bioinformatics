@@ -34,10 +34,6 @@ fi
 #python /nas02/home/h/j/hjcamero/scripts/job_scripts/meghan/transposon/sequence_miner.py $in_fasta $prefix.genomic.fasta
 
 #bbmap.sh ref=$ref_fasta in=$frags threads=4 ambiguous=best sam=1.4 out=$prefix.bbmap.sam local=f k=8 nodisk
-bbmap.sh ref=$ref_fasta in=$frags threads=4 ambiguous=best sam=1.4 out=$prefix.bbmap.sam local=f nodisk
+bbmap.sh ref=$ref_fasta in=$frags threads=4 ambiguous=best sam=1.4 out=$prefix.sam local=t nodisk
 
-python /nas02/home/h/j/hjcamero/scripts/job_scripts/meghan/transposon/sam2mappos.py $prefix.bbmap.sam $ref_gbk > $prefix.mapping.csv
-
-mv counts_per_gene.png $prefix.counts_per_gene.png
-mv plot_by_position.png $prefix.counts_per_position.png
-mv hist_of_mapping_quality.png $prefix.hist_of_mapping_quality.png
+python /nas02/home/h/j/hjcamero/scripts/job_scripts/meghan/transposon/sam2mappos.py $prefix.sam $ref_gbk $prefix > $prefix.mapping.csv

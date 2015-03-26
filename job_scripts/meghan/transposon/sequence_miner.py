@@ -59,23 +59,31 @@ def paired_miner(r1_f, r2_f, out_f, reg1, reg2):
                 missing_r2 += 1
                 continue
 
-            print(("s2ge", r2_genom))
+            #print(("s2ge", r2_genom))
             r1_len[len(r1_genom)] = r1_len.get(len(r1_genom), 0) + 1
             r2_len[len(r2_genom)] = r2_len.get(len(r2_genom), 0) + 1
 
             r2_genom_rc = Seq(r2_genom).reverse_complement()
 
-            print(("seq1", r1_genom))
-            print(("seq2", str(r2_genom_rc)))
+            #print(("seq1", r1_genom))
+            #print(("seq2", str(r2_genom_rc)))
 
 
             subseq = longest_common_substring(r1_genom, r2_genom_rc)
             subseq_len[len(subseq)] = subseq_len.get(len(subseq), 0) + 1
-            print(("subs", subseq))
-            print()
+            #print(("subs", subseq))
+            #print()
             #sys.exit()
             
-            if len(subseq) < 13:
+            #if len(subseq) < 5:
+                #print(("s2ge", r2_genom))
+                #print(("seq1", r1_genom))
+                #print(("seq2", str(r2_genom_rc)))
+                #print(("subs", subseq))
+                #print()
+
+
+            if len(subseq) < 15 or len(subseq) > 17:
                 short_conseq += 1
                 continue
             OUT.write(">{}; genomic_len={}".format(rec1.id, len(subseq)) + "\n")
@@ -84,13 +92,14 @@ def paired_miner(r1_f, r2_f, out_f, reg1, reg2):
     print("Both bad: {}".format(str(missing_both)))
     print("R1 bad: {}".format(str(missing_r1)))
     print("R2 bad: {}".format(str(missing_r2)))
-    print("Conseq too short: {}".format(str(short_conseq)))
+    print("Subseq too short/long: {}".format(str(short_conseq)))
 
     names = ["R1 length", "R2 length", "Subseq Length"]
     for indx, seq_type in enumerate([r1_len, r2_len, subseq_len]):
         print(names[indx])
         for key in sorted(seq_type):
-            print("  {}\t{}".format(str(key), str(seq_type[key])))
+            if int(key) >= 15 and int(key) <= 17:
+                print("  {}\t{}".format(str(key), str(seq_type[key])))
 
 def longest_common_substring(seq1, seq2):
     """ Longest common substr dynamic programming style """
@@ -148,14 +157,20 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-r1", help="fasta of r1 reads")
     parser.add_argument("-r2", help="fasta of r2 reads")
-    parser.add_argument("-e", help="number of errors to allow in anchor sequence", default="3")
+    parser.add_argument("-e", help="number of errors to allow in anchor sequence", default="0")
     parser.add_argument("-out", help="out file for sequences", required=True)
     args = parser.parse_args()
 
     #TRANSPOSON="TAACAGGTTGGATGATAAGTCCCCGGTCT"
-    TRANSPOSON="TAACAGG"
+    #TRANSPOSON="TAACAGGTT"
+    
+    
     #reg1 = "C{0,1}TGTTA([ACTG]{10,30})(AAAAGATCGGAAGAGCACACGTCTGAACTCC){e<=" + args.e + "}"
-    reg1 = "C{0,1}TGTTA([ACTG]{10,30})(AAAAGAT){e<=" + args.e + "}"
+    #reg1 = "C{0,1}TGTTA([ACTG]{10,30})(AAAAGAT){e<=" + args.e + "}"
+    
+    # insertion may leave TA in genome so take that off filtering
+    TRANSPOSON="ACAGGTT"
+    reg1 = "C{0,1}TGT([ACTG]{10,30})(AAAAGAT){e<=" + args.e + "}"
     reg2 = "[NT]{3,4}([ATGC]{10,30})(:?" + TRANSPOSON + "){e<=" + args.e + "}"
 
     if args.r1 and args.r1:

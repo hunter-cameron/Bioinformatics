@@ -3,6 +3,8 @@ from __future__ import print_function
 import argparse
 import sys
 import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
 import subprocess
 import os
 
@@ -119,11 +121,47 @@ def _execute_command(command):
     return subprocess.check_output(command.split(" "), stderr=open(os.devnull, 'w'))
 
 
+def plot_comp_and_contam(frame, name):
+    x_vals = range(frame.shape[0])
+    complete_vals = np.array(frame[["completeness"]])
+    contam_vals = np.array(frame[["contamination"]])
+
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    ax.set_title("Completeness and Contamination Using CheckM")
+    ax.bar(x_vals, complete_vals, 1, color='#deb0b0', align='center', label="completeness")
+
+    #ax2 = ax.twinx()
+    ax.bar(x_vals, contam_vals, 1, color='#b0c4de', align='center', label="contamination")
+
+    names = list(frame.index)
+
+    plt.xlim(x_vals[0] - 1, x_vals[-1] + 1)
+    plt.xticks(x_vals, np.array(names), rotation="vertical", ha='center', fontsize='x-small')
+    plt.xlabel("Genome")
+
+    plt.ylabel("Percent")
+    ax.yaxis.set_ticks_position("right")
+
+    lgd = plt.legend(bbox_to_anchor=(1.1, 1), loc=2, borderaxespad=0)
+
+    #plt.tight_layout()
+    # save figure taking the legend into account to resize
+    fig.savefig(name, bbox_extra_artists=(lgd,), bbox_inches='tight')
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="This is essentially a plotting library wrapped into a single executable.")
-    parser.add_argument("-c", help="output directory used in the CheckM run")
+    parser.add_argument("-root", help="output root directory used in the CheckM run")
+    parser.add_argument("-checkm", help="the checkm table from the mypyli script", required=True)
+    parser.add_argument("-type", help="type of plot to make", default="all", choices=['all'])
+    parser.add_argument("-base", help="base name for plots", required=True)
     args = parser.parse_args()
 
-    markers = get_markers_per_contig(args.c)
-    print(markers)
+    checkm_table = read_data_table(args.checkm)
+
+    if args.type == 'all':
+        plot_comp_and_contam(checkm_table, "{}.comp_and_cont.png".format(args.base))
+
+    #markers = get_markers_per_contig(args.r)
+    #print(markers)
