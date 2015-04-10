@@ -7,31 +7,6 @@ import sys
 import regex
 import argparse
 
-def mine_seqs(in_f, out_f):
-    with open(in_f, 'r') as IN, open(out_f, 'w') as OUT:
-        rec = 1
-        for record in SeqIO.parse(IN, 'fasta'):
-            
-            genomic_frag = _fuzzy_match(record.seq)
-            if genomic_frag:
-                OUT.write(">{}; genomic_len={}".format(record.id, len(genomic_frag)) + "\n")
-                OUT.write(genomic_frag + "\n")
-
-def _fuzzy_match(seq, transposon, errors=2):
-
-    # matches 2-4 T, then 10-30 nucs, then the transposon allowing errors
-    reg = "[NT]{3,4}([ATGC]{10,30})(:?" + transposon + "){e<=" + str(errors) + "}"
-    
-    #reg = ".*([ATGC]{14})(:?" + transposon + "){e<=" + str(errors) + "}"
-    match = regex.match(reg, str(seq))
-
-    #print(("match", match))
-
-    if match:
-        return match.group(1)
-    else:
-        return ""
-
 def single_miner(read_f, out_f, reg):
     pass
 
@@ -142,18 +117,7 @@ def get_genomic_frag(seq, reg):
         return ""
 
 
-def _n_minus_T(seq, n=25):
-    """ Matches the first n characters and then strips off the starting "T"s """
-    match = regex.match("T*([ACTG]*)", str(seq)[:n])
-
-    if match:
-        return match.group(1)
-    else:
-        return ""
-
 if __name__ == "__main__":
-    #mine_seqs(sys.argv[1], sys.argv[2])
-    
     parser = argparse.ArgumentParser()
     parser.add_argument("-r1", help="fasta of r1 reads")
     parser.add_argument("-r2", help="fasta of r2 reads")

@@ -3,7 +3,8 @@ import argparse
 import random
 import sys
 import queue
-import multiprocessing
+import threading
+import time
 
 def shuffle_seqs_np(fast_f, seq_lines, out_f):
     seq_breaks = np.array([0], dtype=int)
@@ -114,18 +115,22 @@ class FastxIter(object):
         self.blocksize = blocksize
 
         self.finished = False
-        self.queue = queue.Queue(maxsize=1000)
+        self.queue = queue.Queue(maxsize=10000)
 
     def get_seqs(self, num_seqs):
         seqs = []
         for i in range(num_seqs):
             try:
-                seqs.append(self.queue.get(block=False, timeout=10))
+                seqs.append(self.queue.get(block=True, timeout=1))
             except queue.Empty:
+                # empty queues usually mean seqs are being written faster
+                # than they can be processed
+                time.sleep(5)
                 if self.finished:
                     if seqs:
                         return seqs
                     else:
+                        self.thread.join()
                         raise GeneratorExit("All seqs processed")
         #print(seqs)
         return seqs
@@ -153,13 +158,26 @@ class FastxIter(object):
                 for i in reversed(range(seqs)):
                     # get the base start and end of the sequence
                     start, end = i*self.lines_per_seq, (i+1)*self.lines_per_seq
-                    
+
                     # if there are orphan lines, need to add them to the beginning
-                    # and subtract 1 to offset the base 1 or orphan lines
+                    # and subtract 1 to offset the base 1 of orphan lines
                     if orphan_lines:
-                        start, end = start + orphan_lines -1, end + orphan_lines -1
-                    
+                        start, end = start + orphan_lines, end + orphan_lines
+ 
+                    if not lines[start].startswith("@HI"):
+                        print((chunk,))
+                        #print(lines)
+                        print()
+                        print(leftovers)
+                        print()
+                        print(str(i), str(start), str(end), str(len(lines)), str(len(leftovers)), str(orphan_lines))
+                        print()
+                        print("\n".join(lines[start:end]))
+                        sys.exit()
+
                     self.queue.put("\n".join(lines[start:end]))
+                    #print("\n".join(lines[start:end]))
+                    #print("\n================================================\n")
 
                 # add lines that weren't a full seq to leftovers
                 leftovers = lines[0:orphan_lines]
@@ -187,13 +205,32 @@ class FastxIter(object):
 
         self.finished = True
 
+    def process_seqs_threaded(self):
+        """ Process seqs in chunks and adds them to the queue. Should be threaded. """
+        
+        self.thread = threading.Thread(target=self.process_seqs)
+        self.thread.start()
+
     def _iter_reverse(self):
         """ Iters chunks of a file in reverse order. 
         Each chunk is guaranteed to have a full line of text.
         The last line in the chunk will not have a new line character.
         """
         self.fh.seek(0, 2)
-        position = self.fh.tell()
+        total = self.fh.tell()
+
+        # check for newline on the last line
+        # skip it if there
+        if total:
+            self.fh.seek(total-1)
+            if self.fh.read(1) == "\n":
+                print("Omitting endline!")
+                position = total - 1
+            else:
+                position = total
+
+        else:
+            position = 0
 
         prev_line = ''
         while position > 0:
@@ -359,9 +396,12 @@ def random_merge(lines_per_seq, num_subfiles, outfile):
             #print(i)
             f_iter = FastxIter("shuf_subf{}.fastx".format(str(i)), lines_per_seq, reverse=False)
 
-        f_iter.process_seqs()
+        f_iter.process_seqs_threaded()
        
         iters.append(f_iter)
+
+    # sleep to give the IO threads a head start
+    time.sleep(5)
 
     # write the new file
     with open(outfile, 'w') as OUT:
@@ -375,9 +415,9 @@ def random_merge(lines_per_seq, num_subfiles, outfile):
                 # get seqs may not necessarily return the number of 
                 # seqs asked for if it runs out of sequences
                 to_write = iters[iter_indx].get_seqs(num_seqs)
-                #print("Wrote {} seqs from iter {}".format(str(len(to_write)), str(iter_indx)))
+                print("Wrote {} seqs from iter {}".format(str(len(to_write)), str(iter_indx)))
             except GeneratorExit:   # remove the iter if it is done
-                #print("Queue finished, removing.")
+                print("Queue finished, removing.")
                 iters.pop(iter_indx)
                 continue
         
@@ -388,7 +428,8 @@ def random_merge(lines_per_seq, num_subfiles, outfile):
                     first = False
                 else:
                     OUT.write("\n" + "\n".join(to_write))
-        
+
+
         # write the final new line
         OUT.write("\n")
 
@@ -400,7 +441,9 @@ if __name__ == "__main__":
     parser.add_argument("-o", help="name for out file", required=True)
     args = parser.parse_args()
 
+    print("Writing subfiles.")
     shuffle_seqs(args.f, args.n, args.s)
     #rewrite_fasta(args.n, args.f)
 
+    print("Randomizing sequences.")
     random_merge(args.n, args.s, args.o)

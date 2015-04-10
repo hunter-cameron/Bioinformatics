@@ -101,7 +101,7 @@ def get_best_taxonomy(taxstring_counts, class_perc=.5):
             return "; ".join(taxonomy)
 
     return "; ".join(taxonomy)
-def main(blast_f, tree, checkm_f):
+def main(blast_f, tree, checkm_f=None):
     classifications = {}
     for file in blast_f:
 
@@ -118,7 +118,8 @@ def main(blast_f, tree, checkm_f):
     for genome, tax in classifications.items():
         print("{}\t{}".format(genome, tax))
 
-    add_tax_assignments_to_checkm(classifications, checkm_f)
+    if checkm_f:
+        add_tax_assignments_to_checkm(classifications, checkm_f)
 
 def add_tax_assignments_to_checkm(classifications, checkm_table_f):
     ser = pd.Series(classifications)

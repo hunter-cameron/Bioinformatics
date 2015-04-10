@@ -284,7 +284,7 @@ if ( ! is.na(get('annotation', params))) {
 
     annotation <- read.table(get('annotation', params), header=T, row.names=1, check.names=F, stringsAsFactors=FALSE)
     cat("Sorting Samples...\n")
-    final <- sort_by_annotation(otus=final, annotation=annotation, use_ann_order=get('use_ann_order', params))
+    final <- sort_samples_by_annotation(otus=final, annotation=annotation, use_ann_order=get('use_ann_order', params))
 } else {
     annotation <- NA
 }
@@ -292,5 +292,7 @@ if ( ! is.na(get('annotation', params))) {
 # create heatmap
 cat(paste0("Drawing heatmap:  ", get('output', params)), "\n")
 png(get('output', params), height=get('height', params), width=get('width', params))
-pheatmap(as.matrix(final), cluster_rows=get('cluster_otus', params), cluster_cols=get('cluster_samples', params), col=palette, annotation = annotation)
+pheatmap(as.matrix(final), cluster_rows=get('cluster_otus', params), cluster_cols=get('cluster_samples', params), col=palette, annotation = annotation, border_color=NA)
 dev.off()
+
+write.table(final, "heatmap_table.txt", sep="\t", quote=FALSE)

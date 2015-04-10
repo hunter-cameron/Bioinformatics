@@ -44,6 +44,9 @@ if __name__ == "__main__":
         reform_table = reformat_table(table, field='present')
         plot(reform_table, "perc_genes_present_above_95id")
 
+        reform_table = reformat_table(table, field='ordered')
+        plot(reform_table, "perc_genes_ordered")
+
     if args.tquast:
         table = read_data(args.tquast)
     

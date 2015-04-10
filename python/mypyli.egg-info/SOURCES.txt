@@ -1,12 +1,17 @@
 README
 mypyli/__init__.py
+mypyli/blastparser.py
+mypyli/checkm.py
 mypyli/fast_build.datafile.py
 mypyli/genbank.py
+mypyli/isolatedb.py
 mypyli/kraken.py
+mypyli/plotmaster.py
 mypyli/samparser.py
 mypyli/setup.py
 mypyli/taxstring.py
 mypyli/taxtree.py
+mypyli/test_isolatedb.py
 mypyli/utilities.py
 mypyli.egg-info/PKG-INFO
 mypyli.egg-info/SOURCES.txt

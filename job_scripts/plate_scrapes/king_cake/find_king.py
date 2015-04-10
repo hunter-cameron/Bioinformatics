@@ -55,7 +55,7 @@ class King(object):
         for piece in self.get_pieces():
             total += 1
             if piece.found:
-                if piece.f_identity >= minid:
+                if piece.identity >= minid:
                     found += 1
 
         return found / total
@@ -77,7 +77,7 @@ class King(object):
 class KingContig(object):
     def __str__(self):
         string = "Contig: {}. Length: {}\n    ".format(self.name, self.length)
-        string += "\n    ".join([str(piece) for piece in self.pieces.values()])
+        string += "\n    ".join([str(piece) for piece in self.get_pieces()])
         return string
 
     def __init__(self, name, length=None):
@@ -120,12 +120,16 @@ class KingContig(object):
         return mapped_ranges
 
     def find_index_ordered(self):
+        """ 
+        This method struggles to resolve repetitions, it is is mapped to
+        a repetition rather than the piece, it may be placed as out of order. 
+        """
         pieces = [piece for piece in self.get_pieces()]
         
         prev = None
         curr = None
         nfound = False
-        next = 0
+        next = -1   # set to -1 so on the first loop it will be set to 0
 
         while True:
 
@@ -145,6 +149,7 @@ class KingContig(object):
             n = False
         
             if curr is not None:
+                #print(pieces[curr])
                 #print(("curr", curr))
                 #print("cnode, " + str(pieces[curr].cnode))
                 #print("indx, " + str(CakeNode.contigs[pieces[curr].cnode.contig].index(pieces[curr].cnode)) + "/" + str(len(CakeNode.contigs[pieces[curr].cnode.contig]) - 1))
@@ -157,6 +162,10 @@ class KingContig(object):
                         if pieces[prev].cnode.is_terminal() and pieces[curr].cnode.is_terminal():
                             p = True
                             #print("pbreak")
+                        else:   # otherwise it doesn't match
+                            #print("pno")
+                            pass
+
                         
                 else:       # is there is no prev, that is ok
                     p = True
@@ -171,6 +180,9 @@ class KingContig(object):
                         if pieces[curr].cnode.is_terminal() and pieces[next].cnode.is_terminal():
                             n = True
                             #print("nbreak")
+                        else:   # otherwise it doesn't match
+                            #print("nno")
+                            pass
                 else:       # if there is no next, that is ok
                     n = True
                     #print("nnone")
@@ -186,11 +198,191 @@ class KingContig(object):
             curr = next
             nfound = False
                         
+    def set_optimal_cnodes(self):
+        """ 
+        Sets the primary cnode for each KingPiece to be the one
+        that maximizes the number of KingPieces that are properly ordered.
+        
+        This method is a rough draft for this task. There are probably multiple
+        ways to optimize this and also multiple bugs that I have looked over. 
 
+        Basically, this gets the job done now, but don't expect it to always
+        work.
+        """
+        pieces = [piece for piece in self.get_pieces()]
+      
+        multiple_paths = []
+        # I really only care about the nodes at which there are multiple
+        for indx in range(len(pieces)):
+            if len(pieces[indx].alignments) > 1:
+                multiple_paths.append(indx)
+            else:
+                if pieces[indx].found:
+                    pieces[indx].cnode = pieces[indx].alignments[0]
+
+        # if there are no multiples, return here
+        if not multiple_paths:
+            return
+
+        # get tuples of bounds for multiple regions
+        ranges = []
+        low_bound = 0
+        for indx in range(1, len(multiple_paths)):
+            if multiple_paths[indx] > 1 + multiple_paths[indx-1]:
+                ranges.append((multiple_paths[low_bound], multiple_paths[indx-1]))
+                low_bound = indx
+        #print((low_bound, len(multiple_paths)))
+        ranges.append((multiple_paths[low_bound], multiple_paths[-1]))
+
+        #print(ranges)
+
+        
+        def place_alignment(d, tag, pieces):
+            """ 
+            Function to recurse over a dict and find all possible
+            spots for a given alignment. 
+
+            This is an in-method function because I wanted to use
+            recursion but saw no point in creating a static method for
+            the class.
+            """
+            # set the piece and alignment indices for the tag
+            pti, ati = [int(val) for val in tag.split("_")]
+
+            for k, v, in d.items():
+                if isinstance(v, dict):
+                    d[k] = place_alignment(v, tag, pieces)
+                else:
+                    # get piece and alignment index
+                    pi, ai = [int(val) for val in k.split("_")]
+                    # skip alignments from the same index
+                    if pti == pi:
+                        continue
+                    if pieces[pti].alignments[ati].is_logically_cons(pieces[pi].alignments[ai]):
+                        d[k] = {tag: 1}
+
+
+            return d
+        
+
+
+        # try to resolve the best node for the multiples
+        for irange in ranges:
+            #print(("irange", irange))
+            imin, imax = irange
+            
+            paths = {}
+            for indx in range(imin, imax+1):
+                for align_indx in range(len(pieces[indx].alignments)):
+                    # recurse through all paths looking for all possible
+                    # placements
+                    tag = "{}_{}".format(indx, align_indx)
+                    #print(("tag", tag))
+
+                    paths =  place_alignment(paths, tag, pieces)
+                    paths[tag] = 1
+
+                    #[print((k, paths[k])) for k in sorted(paths)]
+                    #print()
+                    #print()
+
+
+            def get_all_paths(d, prefix=[]):
+                """ 
+                Another function to recurse through a dict that didn't
+                need to be a static class method.
+
+                Returns a list of all paths.
+                """
+                paths = []
+
+                for k, v in d.items():
+                    if isinstance(v, dict):
+                        paths += get_all_paths(v, prefix + [k])
+                    else:
+                        paths.append(prefix + [k])
+                return paths
+
+            paths = get_all_paths(paths)
+
+            #[print(path) for path in paths]
+            
+
+            top_paths = [[]]
+            for path in paths:
+                if len(path) > len(top_paths[0]):
+                    top_paths = [path]
+                elif len(path) == len(top_paths[0]):
+                    top_paths.append(path)
+
+            #print(top_paths)
+
+            # try to score the paths based on whether they match the nodes
+            # before and after them. 
+            scores = [0]*len(top_paths)
+            
+            # score previous node
+            if imin > 0:
+                prev = pieces[imin-1]
+                if not prev.cnode:
+                    if prev.found:
+                        print("WARNING! cannot use node with multiple alignments as a reference.\nScore will be 0.", file=sys.stderr)
+
+                else:
+                    for indx in range(len(top_paths)):
+                        #print(("path", top_paths[indx][0]))
+                        pi, ai = [int(val) for val in top_paths[indx][0].split("_")]
+
+                        if prev.cnode.is_beside(pieces[pi].alignments[ai]):
+                            scores[indx] += 3
+                        elif prev.cnode.is_logically_cons(pieces[pi].alignments[ai]):
+                            scores[indx] += 1
+
+            # score next node
+            if imax < len(pieces) - 1:
+                next = pieces[imax+1]
+                if not next.cnode:
+                    if next.found:
+                        print("WARNING! cannot use node with multiple alignments as a reference.\nScore will be 0.", file=sys.stderr)
+                else:
+                    for indx in range(len(top_paths)):
+                        #print(("path", top_paths[indx][0]))
+                        pi, ai = [int(val) for val in top_paths[indx][-1].split("_")]
+                        if next.cnode.is_beside(pieces[pi].alignments[ai]):
+                            scores[indx] += 3
+                        elif next.cnode.is_logically_cons(pieces[pi].alignments[ai]):
+                            scores[indx] += 1
+
+
+            # get the top score (if two are tied it will take the first)
+            top = max(scores)
+            top_indx = scores.index(top)
+            #print(("top", scores, top_indx))
+    
+            # assgn cnodes 
+            for tag in top_paths[top_indx]:
+                pi, ai = [int(val) for val in tag.split("_")]
+                pieces[pi].cnode = pieces[pi].alignments[ai]
+
+            #sys.exit()
+  
 class KingPiece(object):
     def __str__(self):
+        if self.found:
+            if self.cnode:
+                return "Piece {}. Location {} {}-{} | Found {} {}-{} {}% id, Ordered: {}".format(
+                    str(self.index), self.contig.name, str(self.start), str(self.end),
+                    self.cnode.contig, str(self.cnode.start), str(self.cnode.end),
+                    str(self.identity * 100), str(self.f_ordered))
+            else:
+                return "Piece {}. Location {} {}-{} | Found ambig node, {}% id, Ordered: {}".format(
+                    str(self.index), self.contig.name, str(self.start), str(self.end),
+                    str(self.identity * 100), str(self.f_ordered))
 
-        return "Piece {}. Start: {} End: {}".format(str(self.index), str(self.start), str(self.end))
+        else:
+            return "Piece {}. Start: {} End: {} | Not found".format(str(self.index), str(self.start), str(self.end))
+
+        print(self.index)
 
     def __init__(self, contig, index, start=None, end=None):
         # identity metrics
@@ -207,11 +399,31 @@ class KingPiece(object):
         self.cnode = None
         self.f_identity = None
         self.f_ordered = None
+
+        # this holds all the alignments, the best should be determined by 
+        # set optimal cnodes
+        self.alignments = []
  
     def is_beside(self, piece):
         """ Determines if one piece is adjacent to another (ascending or descending) """
         return self.contig == piece.contig and self.index in [piece.index - 1, piece.index + 1]
 
+    def register_found(self, cnode, perc_id):
+        """ 
+        Registers a piece as found, if piece has been found before, 
+        this will update the repeats section
+        """
+
+        if self.found:
+            self.alignments.append(cnode)
+        else:
+            self.alignments.append(cnode)
+            # it should be fine to set the perc id for the first one only
+            # to be ambiguous, they should be exactly the same in terms of
+            # % id
+            self.identity = perc_id
+            self.found = True
+    
 
 class CakeContig(object):
     contigs = {}
@@ -267,15 +479,32 @@ class CakeNode(object):
     indexed = False
     
     @classmethod
-    def _add_node(cls, node):
-        """ Add the node if it doesn't exist."""
+    def add_node(cls, contig, start, end, piece):
+        """ 
+        Add the node if it doesn't exist.
+        
+        I want to add nodes like this rather than with the __init__ traditional
+        way because I don't want to add duplicate nodes but I want to 
+        return the node that the index was assigned to. __init__ would just
+        return the new node and not care that the node wasn't actually added
+        to the dict.
+        
+        Perhaps I can use add node to set self in the __init__?
+        """
+        node = cls(contig, start, end, piece)
+
         cls.contigs[node.contig] = cls.contigs.get(node.contig, [])
 
+        # if node has been found before, add a new piece
         if node in cls.contigs[node.contig]:
-            cls.contigs[node.contig].append(node)
-            #raise NotImplementedError("Duplicated nodes are not currently allowed.")
+            #print("Node already found {}".format(str(node.start)))
+            indx = cls.contigs[node.contig].index(node)
+            cls.contigs[node.contig][indx].pieces += node.pieces
+            return cls.contigs[node.contig][indx]
+        # otherwise add the node
         else:
             cls.contigs[node.contig].append(node)
+            return node
 
     @classmethod
     def index_nodes(cls):
@@ -292,23 +521,27 @@ class CakeNode(object):
 
         cls.indexed = True
 
+    def __str__(self):
+        return "\t".join([self.contig, self.start, self.end])
+
     def __init__(self, contig, start, end, piece):
-        self.piece = piece
+        self.pieces = [piece]
         self.contig = contig
         self.start = start
         self.end = end
 
-        self._add_node(self)
-
         self.prev = None
         self.next = None
+
+        #self._add_node(self)
+
 
     def __str__(self):
         return "CakeNode - {}, {}-{}".format(self.contig, str(self.start), str(self.end))
 
     # comparison operator overloads
     def __eq__(self, other):
-        return (self.contig == other.contig) and (self.start == other.start)
+        return (self.contig == other.contig) and (self.start == other.start) and (self.end == other.end)
 
     def __ne__(self, other):
         return not self == other
@@ -338,8 +571,25 @@ class CakeNode(object):
         if self.next:
             beside.append(self.next)
 
+        #print((str(self), str(other), [str(item) for item in beside]))
+
+        #print((other, beside))
         return other in beside
 
+    def is_logically_cons(self, other):
+        """
+        This is a bit of a convenience method. It returns a boolean of whether
+        one node "is logically consistent" with another in terms of order.
+
+        In order to be logically consistent, the nodes must be beside one
+        another or both nodes must be terminal on a contig (ie. there is a 
+        contig break in the cake assembly that wasn't present in the king asm.)
+        """
+
+        if self.is_beside(other):
+            return True
+        else:
+            return self.is_terminal() and other.is_terminal()
 
     def is_at_end(self):
         return self.contigs[self.contig][-1] == self
@@ -414,14 +664,18 @@ def split_king_fasta(king_f, sp_len, split_f="split_king.fasta"):
     return king, split_f
 
 def run_bbmap(cake_f, split_f, max_len, out="split_king.sam"):
-    """ Runs bbmap and returns a path of the output sam """
+    """ 
+    Runs bbmap and returns a path of the output sam.
+    Prints all top alignments for ambiguously mapped reads.
+    """
     cpus = 4
     if max_len <= 500:
         prog = "bbmap.sh"
     else:
         prog = "mapPacBio.sh"
 
-    cmd = "{} ref={cake_f} in={split_f} local=f ordered=t nodisk sam=1.4 threads={cpus} out={out}".format(
+    #cmd = "{} ref={cake_f} in={split_f} local=f ordered=t ssao=t nodisk overwrite=t sam=1.4 threads={cpus} out={out}".format(
+    cmd = "{} ref={cake_f} in={split_f} local=f ordered=t ssao=f secondary=f nodisk overwrite=t sam=1.4 threads={cpus} out={out}".format(
             prog,
             cake_f=cake_f,
             split_f=split_f,
@@ -455,34 +709,35 @@ def find_pieces(sam_f, king, regex):
                     index = int(m.group('index'))
                     contig = m.group('contig')
                 else:
-                    raise ValueError("Regex didn't match SAM reference!")
+                    raise ValueError("Regex didn't match SAM reference! {}".format(record.qname))
                 
                 piece = king.lookup_piece(contig, index)
 
                 # make the CakeNode
-                cnode = CakeNode(record.rname, record.pos, record.pos + record.length, piece)
+                # NOTE: Check this!
+                # end position is -1 to offset the length -- is this right??
+                cnode = CakeNode.add_node(record.rname, record.pos, record.pos + record.length - 1, piece)
 
                 # register the piece as found
-                piece.found = True
-                piece.cnode = cnode
-                piece.f_identity = record.perc_id
+                piece.register_found(cnode, record.perc_id)
       
 
-def reconstruct_king(king):
-    king_assembly = []
-    for cake_contig in CakeContig.contigs:
-        if self.king_pieces:
-            pass
-            
-
 def gene_pipeline(args):
-    # this regex is pretty complicated but the end matches a ( and then skips
+    # this regex is pretty messy but the end matches a ( and then skips
     # until a second opening ( to capture the contig
-    regex='[^ ]+\ [^_]+_(?P<index>\d+)\ [^(]+\([^(]+\((?P<contig>[^)]+).*'
+    
+    # this beginning anchored regex fails for some JGI names (they have some
+    # sort of bug in their python code with the positions)
+    #regex='[^ ]+\ [^_]+_(?P<index>\d+)\ [^(]+\([^(]+\((?P<contig>[^)]+).*'
+    
+    # This is a begin and end anchored regex that will hopefull be better
+    # this takes advantage of the fact(?) that names seem to only have one
+    # of brackets
+    regex='[^ ]+\ [^_]+_(?P<index>\d+).*\((?P<contig>[^)]+)\) \[.*$'
     king = build_king(args.s, regex=regex)
 
     sam_f = run_bbmap(args.a, args.s, max_len=6000, out="king.sam")
-
+    #sam_f = 'king.sam'
     find_pieces(sam_f, king, regex=regex)
     
     CakeNode.index_nodes()
@@ -490,8 +745,19 @@ def gene_pipeline(args):
     # use the name to print the results
     fasn = os.path.splitext(args.a)[0]
 
-    print("{}\t{}".format(fasn, str(king.get_fraction_found(minid=.95) * 100)))
-    print("{}\t{}".format(fasn, str(king.get_fraction_in_order() * 100)))
+    #[print(node.start, node.end) for node in CakeNode.contigs['N515DRAFT_scaffold00013.13']]
+
+    #[print(str(node)) for node in CakeNode.contigs['N515DRAFT_scaffold00001.1'][:10]]
+    #king.contigs['N515DRAFT_scaffold00001.1'].set_optimal_cnodes()
+    #king.contigs['N515DRAFT_scaffold00001.1'].find_index_ordered()
+    #print(king.contigs['N515DRAFT_scaffold00001.1'])
+
+    for contig in king.contigs.values():
+        contig.set_optimal_cnodes()
+
+    print("{}\t{}\t{}".format(fasn, str(king.get_fraction_found(minid=.95) * 100), str(king.get_fraction_in_order() * 100)))
+
+    #print(str(king))
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Looks for the information from a trusted genome assembly in a metagenome by chopping the trusted genome into pieces of length -l and searching for them in the metagenome.")
@@ -507,8 +773,8 @@ if __name__ == "__main__":
 
     king, split_f = split_king_fasta(args.s, args.l)
     
-    sam_f = run_bbmap(args.a, split_f, args.l)
-    
+    #sam_f = run_bbmap(args.a, split_f, args.l)
+    sam_f = "king.sam" 
     get_cake_lengths(sam_f)
    
     find_pieces(sam_f, king)

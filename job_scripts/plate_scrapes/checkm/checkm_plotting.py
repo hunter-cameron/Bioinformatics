@@ -6,6 +6,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import subprocess
+from mypyli import isolatedb
 import os
 
 def read_data_table(data_f):
@@ -156,11 +157,28 @@ if __name__ == "__main__":
     parser.add_argument("-checkm", help="the checkm table from the mypyli script", required=True)
     parser.add_argument("-type", help="type of plot to make", default="all", choices=['all'])
     parser.add_argument("-base", help="base name for plots", required=True)
+    parser.add_argument("-conv", help="convert taxon oids to lab names", action='store_true')
+    parser.add_argument("-trim_comp", help="remove genomes below the specified completeness", type=float)
+    parser.add_argument("-trim_cont", help="remove genomes above the specified contamination", type=float)
+    parser.add_argument("-sort", help="sort genomes by completeness", action='store_true')
     args = parser.parse_args()
 
     checkm_table = read_data_table(args.checkm)
 
+    if args.trim_comp:
+        checkm_table = checkm_table.query('completeness >= args.trim_comp')
+
+    if args.trim_cont:
+        checkm_table = checkm_table.query('contamination <= args.trim_cont')
+
+    if args.sort:
+        checkm_table.sort_index(by='completeness', inplace=True)
+
+    if args.conv:
+        checkm_table = isolatedb.convert_dataframe(checkm_table)
+
     if args.type == 'all':
+
         plot_comp_and_contam(checkm_table, "{}.comp_and_cont.png".format(args.base))
 
     #markers = get_markers_per_contig(args.r)

@@ -10,10 +10,6 @@ from Bio import Entrez
 import re
 
 
-# TODO: Incorporate taxstrings lookup functions to allow the lookup of unknown data.
-
-
-
 class TaxTree(object):
     """ A class to manage taxonomic relationships by acting as a container for TaxNode objects """
    
@@ -85,7 +81,7 @@ class TaxTree(object):
         try:
             return self.taxnodes[taxid]
         except KeyError as e:
-            print("No entry for taxid: {} in taxtree: {}".format(taxid, self))
+            #print("No entry for taxid: {} in taxtree: {}".format(taxid, self))
             raise e
 
 
@@ -171,9 +167,7 @@ class TaxTree(object):
                         if node.rank == rank:
                             return node
                         else:
-                            # may want to try to match parents
-                            assert(node.rank == rank)
-                            pass
+                            continue
                 else:
                     if self.remote:
                         try:

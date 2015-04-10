@@ -60,11 +60,13 @@ class SamRecord(object):
         self._length = None
         self._matches = None
         self._perc_id = None
+        self._mismatches = None
+        self._soft_clipped = None
 
     @property
     def length(self):
         if self._length is None:
-            self.length = len(self.seq)
+            self._parse_cigar()
 
         return self._length
     @length.setter
@@ -78,26 +80,33 @@ class SamRecord(object):
         SAM cigar format 1.4
         """
         if self._matches is None:
-            if "=" in self.cigar:       # sam 1.4
-                m = re.findall("(\d+[MIDNSHP=X])", self.cigar)
-                
-                if m:
-                    matches = 0
-                    for group in m:
-                        if group[-1] == "=":
-                            matches += int(group[:-1])
-
-                    self.matches = matches
-                else:
-                    raise ValueError("Cigar string {} could not be parsed. It may be malformed.".format(self.cigar))
-            else:
-                raise NotImplementedError("Right now, this requires SAM format 1.4")
+            self._parse_cigar()
 
         return self._matches
     @matches.setter
     def matches(self, value):
         self._matches = value
     
+    @property
+    def mismatches(self):
+        if self._mismatches is None:
+            self._parse_cigar()
+
+        return self._mismatches
+    @mismatches.setter
+    def mismatches(self, value):
+        self._mismatches = value
+
+    @property
+    def soft_clipped(self):
+        if self._soft_clipped is None:
+            self._parse_cigar()
+
+        return self._soft_clipped
+    @soft_clipped.setter
+    def soft_clipped(self, value):
+        self._soft_clipped = value
+
     @property
     def perc_id(self):
         if self._perc_id is None:
@@ -108,5 +117,25 @@ class SamRecord(object):
     def perc_id(self, value):
         self._perc_id = value
 
-    
+    def _parse_cigar(self):
+        cigar_stats = {k: 0 for k in ['M', 'I', 'D', 'N', 'S', 'H', 'P', '=', 'X']}
+        length = 0
+        if "=" in self.cigar:       # sam 1.4
+            m = re.findall("(\d+[MIDNSHP=X])", self.cigar)
+            if m:
+                
+                for group in m:
+                    cigar_stats[group[-1]] = cigar_stats.get(group[-1], 0) + int(group[:-1])
+                    length += int(group[:-1])
+                
+                self.length = length
+                self.matches = cigar_stats['=']
+                self.mismatches = cigar_stats['X']
+                self.soft_clipped = cigar_stats['S']
+                    
+            else:
+                raise ValueError("Cigar string {} could not be parsed. It may be malformed.".format(self.cigar))
+        else:
+            raise NotImplementedError("Right now, this requires SAM format 1.4")
+
 
