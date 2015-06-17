@@ -121,11 +121,10 @@ def _execute_command(command):
     """
     return subprocess.check_output(command.split(" "), stderr=open(os.devnull, 'w'))
 
-
 def plot_comp_and_contam(frame, name):
     x_vals = range(frame.shape[0])
-    complete_vals = np.array(frame[["completeness"]])
-    contam_vals = np.array(frame[["contamination"]])
+    complete_vals = np.array(frame[["Completeness"]])
+    contam_vals = np.array(frame[["Contamination"]])
 
     fig = plt.figure()
     ax = fig.add_subplot(111)
@@ -150,7 +149,6 @@ def plot_comp_and_contam(frame, name):
     # save figure taking the legend into account to resize
     fig.savefig(name, bbox_extra_artists=(lgd,), bbox_inches='tight')
 
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="This is essentially a plotting library wrapped into a single executable.")
     parser.add_argument("-root", help="output root directory used in the CheckM run")
@@ -166,13 +164,13 @@ if __name__ == "__main__":
     checkm_table = read_data_table(args.checkm)
 
     if args.trim_comp:
-        checkm_table = checkm_table.query('completeness >= args.trim_comp')
+        checkm_table = checkm_table.query('Completeness >= args.trim_comp')
 
     if args.trim_cont:
-        checkm_table = checkm_table.query('contamination <= args.trim_cont')
+        checkm_table = checkm_table.query('Contamination <= args.trim_cont')
 
     if args.sort:
-        checkm_table.sort_index(by='completeness', inplace=True)
+        checkm_table.sort_index(by='Completeness', inplace=True)
 
     if args.conv:
         checkm_table = isolatedb.convert_dataframe(checkm_table)

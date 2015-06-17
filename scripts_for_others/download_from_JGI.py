@@ -1,1 +1,1 @@
-../python/download_from_JGI.py
+../python/mypyli/download_from_JGI.py

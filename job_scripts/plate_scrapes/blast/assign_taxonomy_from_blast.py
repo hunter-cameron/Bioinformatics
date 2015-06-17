@@ -68,7 +68,7 @@ def assign_tax_ids(tree, iterable):
 
     return assignments
         
-def get_best_taxonomy(taxstring_counts, class_perc=.5):
+def get_best_taxonomy(taxstring_counts, class_perc=.50):
     
     # build tree of counts   
     tree_counts = {'count': 0, 'children': {}}
@@ -111,7 +111,7 @@ def main(blast_f, tree, checkm_f=None):
     
         taxstr_counts = {taxid_assign[taxid].get_tax_string(): taxid_counts[taxid] for taxid in taxid_assign}
 
-        taxonomy = get_best_taxonomy(taxstr_counts)
+        taxonomy = get_best_taxonomy(taxstr_counts, class_perc=.90)
 
         classifications[basename(file)] = taxonomy
 

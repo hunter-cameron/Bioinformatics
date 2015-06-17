@@ -1048,7 +1048,7 @@ def main(args):
 
         if failed_log:
             print("\n\nLog of failed downloads:")
-            [print("    " + entry) for entry in failed_log]
+            [print("    " + str(entry)) for entry in failed_log]
         else:
             print("\n\nAll files downloaded successfully!")
         if interface.overwritten_paths:

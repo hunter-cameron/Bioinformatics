@@ -3,7 +3,7 @@
 from mypyli import taxtree
 import sys
 
-tree = taxtree.TaxTree.load_tree("/nas02/home/h/j/hjcamero/scripts/python/mypyli/taxtree_kingdom.pickle")
+tree = taxtree.TaxTree.load_tree("/nas02/home/h/j/hjcamero/scripts/python/mypyli/taxtree_py3k.pickle")
 
 with open(sys.argv[1], 'r') as IN, open("blast_plus_tax.txt", 'w') as OUT:
     for line in IN:

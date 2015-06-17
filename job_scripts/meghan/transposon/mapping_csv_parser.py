@@ -71,6 +71,23 @@ def rewrite_sample_sheet(samp_f):
                     name = "_".join([code, pt2, pt1])
             OUT.write("\t".join([sample, name]) + "\n")
 
+def make_gene_table(frames, names):
+    """ Makes a table of gene counts for all the frames in frames. """
+
+    fr_dict = {}
+    for frame, name in zip(frames, names):
+        counts = frame['gene'].value_counts(sort=False)
+        fr_dict[name] = counts
+
+    comb_frame = pd.concat(fr_dict, axis=1)
+    comb_frame.fillna(0, inplace=True)
+
+    comb_frame.to_csv("gene_table.csv", sep="\t", index_label="gene")
+
+
+
+    
+
 
 def venn_diagram(frame1, frame2, field, names, frame3=None):
     """ 
@@ -190,6 +207,12 @@ if __name__ == "__main__":
 
     ### AT THIS POINT, THE ENVIRONMENT IS SET UP FOR INTERACTIVE MODE
 
+    bins = bin_samples(frames)
+    for_table = [frames['PfTnYel'], bins['soil_gnot'], bins['root_gnot'], bins['soil_open'], bins['root_open']]
+    counts = make_gene_table(for_table, names=['PfTnYel', 'soil_gnot', 'root_gnot', 'soil_open', 'root_open'])
+    sys.exit()
+    
+    
     [print(frame) for frame in frames]
 
     make_venn_diagrams(frames)
