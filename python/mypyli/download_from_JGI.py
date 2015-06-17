@@ -15,13 +15,13 @@ import sys
 import argparse
 from argparse import RawTextHelpFormatter
 import time
-
+import datetime
 from lxml import etree
 
 
 # TODO Add some sort of file check to ensure the entire file was downloaded, specifically for the resume option. 
 
-# TODO Genbank file with > 1000 scaffolds -- not sure if this is possible
+# TODO Genbank file with > 100 scaffolds -- not sure if this is possible
         # Problem = server-side script checks for scaffold count and demands an email
 
 
@@ -60,7 +60,7 @@ class JGIEntry(object):
         self.parent = parent
         self.prefix = prefix
 
-        # placeholders that will be set during _prepare_entry
+        # placeholders that will be set during _lookup_name
         self.name = None
         self.data_tree = None
         self.taxon_oid = None
@@ -82,9 +82,18 @@ class JGIEntry(object):
         # go ahead and look up taxon id
         # I know it makes no programming logic sense to do it here but doing it
         # here will prevent another look of this address and be much faster
-        taxon_oid_match = re.search('href="https://img.jgi.doe.gov/genome.php?id=(\d)+"', name_html.text)
+
+        # there are two potential places to get the taxon_oid
+        #href="https://img.jgi.doe.gov/genome.php?id=
+        taxon_oid_match = re.search('href="https://img.jgi.doe.gov/genome.php\?id=(\d+)"', name_html.text)
         if taxon_oid_match:
             self.taxon_oid = taxon_oid_match.group(1)
+        else:
+            taxon_oid_match = re.search('taxon_oid=(\d+)"', name_html.text)
+
+            if taxon_oid_match:
+                self.taxon_oid = taxon_oid_match.group(1)
+
 
         # would it be possible to use the url to isolate the name? Rather than the text? I don't think it was becuase I did it this way. I think JGI may not always use the full name in all of their URLs.
 
@@ -151,8 +160,6 @@ class JGIEntry(object):
     def _add_children(self, files, node):
         """
         Recursively adds children nodes to the hash.
-        
-        This may end up as a class method.
         """
 
         child_dict = {}
@@ -169,8 +176,6 @@ class JGIEntry(object):
             else:
                 print("Unknown tag: {}".format(child.tag))
 
-            
-
         files.update(child_dict)
 
     # Methods to parse and process URLs to download
@@ -178,6 +183,9 @@ class JGIEntry(object):
         """
         Parses the data tree to get paths that the regex matches.
         Returns: a list of tuples where each entry has the url and the match object from the regex
+
+        The returned list will be sorted in order of timestamp so it is possible (though a hack)
+        to get only most recent file that matches the regex using the -r flag
         """
         
         directory = {}
@@ -210,10 +218,22 @@ class JGIEntry(object):
         for file_name in directory.keys():
             match = re.search(file_reg, file_name)
             if match:
-                new_files.append((directory[file_name]["url"], match))
+                new_files.append((directory[file_name], match))
         
         if new_files:
-            return new_files
+            def _make_datetime(tup):
+                
+                # split out the time zone
+                ts_elems = tup[0]["timestamp"].split(" ")
+                ts_elems.pop(4)
+                ts = " ".join(ts_elems)
+
+                dt = datetime.datetime.strptime(ts, "%a %b %d %H:%M:%S %Y")
+                return dt
+            
+            # sort new_files by timestamp
+            return sorted(new_files, key=_make_datetime, reverse=True)
+
         else:
             #print("No files found for regex: '{}', id: '{}.'".format(file_reg, self.id), file=sys.stderr)
             #print("Skipping downloading...", file=sys.stderr, end="\n\n")
@@ -252,9 +272,9 @@ class JGIEntry(object):
         This isn't a real lookup because it made more sense to just go ahead and get the taxon oid when parsing out the name but this method is called this for continuity between the two entries (IMG and JGI)
         """
 
-        try:
+        if self.taxon_oid:
             return self.taxon_oid
-        except AttributeError:
+        else:
             raise PortalError("Could not find taxon id for {}".format(self.id))
 
         
@@ -303,9 +323,14 @@ class JGIEntry(object):
         if not self.data_tree:
             print("No files (or access denied) for {}. Skipping Download.".format(self.id))
             return
-
+        
         # add the files to download
         path, file_reg = download_regex
+                
+        # optionally inject taxon/proj id
+        file_reg = file_reg.replace(":taxon_oid", self.lookup_taxon_oid())
+        file_reg = file_reg.replace(":proj_id", self.id)
+        
         to_download = self._get_download_tuple(path, file_reg)
 
         # make local path prefix
@@ -317,8 +342,8 @@ class JGIEntry(object):
             prefix = self.id
 
         # make the suffix and download the file
-        for url, match in to_download:
-            
+        for attrib, match in to_download:
+            url = attrib["url"]
             # make the suffix
             # option to name it from a captured group
             # otherwise name it as the whole match
@@ -344,7 +369,7 @@ class IMGEntry(object):
     to interact with the CGI on IMG's web portal to download a different set of data.
     """
 
-    DATA_TYPES = ['gbk', 'ko', 'cog', 'pfam', 'tigrfam', 'interpro']
+    DATA_TYPES = ['fasta', 'gbk', 'ko', 'cog', 'pfam', 'tigrfam', 'interpro']
 
 
     def __init__(self, parent, id, prefix=""):
@@ -463,6 +488,7 @@ class IMGEntry(object):
 
             m = re.search("Please select at least one scaffold", request.text)
             if m:
+                #print(request.text)
                 raise PortalError("Portal claims no scaffolds were selected (this is a true portal error?).")
             
             
@@ -784,11 +810,8 @@ class JGIInterface(object):
     @staticmethod
     def _login(login_file=''):
         """
-        Parses user credentials from a file and then uses them to set up a session. Returns the session,
+        Parses user credentials from a file or string and then uses them to set up a session. Returns the session,
         otherwise dies.
-
-        TODO: Need to allow this to accept a username/password rather than a file in case users would rather not make a
-        file with their credentials.
 
         """
 
@@ -796,11 +819,21 @@ class JGIInterface(object):
         if login_file == '':
             raise ValueError("Login file not specified")
 
-        with open(login_file, 'r') as in_handle:
+
+        # allow this method to take a username/pass as a string
+        try:
+            with open(login_file, 'r') as in_handle:
+                login_data = {
+                    'login': in_handle.readline().strip(),
+                    'password':  in_handle.readline().strip()
+                }
+
+        except FileError:
+            login_elems = login_file.split("\n")
             login_data = {
-                'login': in_handle.readline().strip(),
-                'password':  in_handle.readline().strip()
-            }
+                    'login': login_elems[0].strip(),
+                    'password': login_elems[1].strip()
+                    }
 
 
         # make a session to store cookie information like a browser would
@@ -858,7 +891,7 @@ class JGIInterface(object):
                 for line in IN:
                     item = line.strip()
                     items.append(item)
-        except FileNotFoundError:
+        except (FileNotFoundError, OSError):
             arg = arg.strip()
             items = arg.split(delim)
             
