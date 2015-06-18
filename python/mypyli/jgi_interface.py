@@ -17,12 +17,19 @@ from argparse import RawTextHelpFormatter
 import time
 import datetime
 from lxml import etree
-
+import logging
 
 # TODO Add some sort of file check to ensure the entire file was downloaded, specifically for the resume option. 
 
 # TODO Genbank file with > 100 scaffolds -- not sure if this is possible
         # Problem = server-side script checks for scaffold count and demands an email
+
+
+logging.basicConfig(level=logging.DEBUG)
+LOG = logging.getLogger(__name__)
+
+# turn up the level of the requests logger becuase it is noisy
+logging.getLogger("requests").setLevel(logging.WARNING)
 
 
 # these globals are the base paths for the JGI webportals that are needed
@@ -52,6 +59,482 @@ class AccessDenied(PortalError):
     """ Exception to be thrown when accessing data fails. """
     pass
 
+class AttributeLookupError(AttributeError):
+    """ Exception to be thrown with a specific message when a JGIOrganism attribute lookup fails"""
+    pass
+
+
+class JGIBasePath(object):
+    """ Base class for files and folders on JGI """
+
+    def __init__(self, name, parent=None):
+        self.name = name
+        self.parent = parent
+
+        # set the regex match to a full match of the name, if matched later this will be changed
+        reg_match = re.match("(.*)", name)
+
+
+
+    def get_full_path(self, path_so_far=""):
+        """ gets the full path of a piece of a JGI data piece """
+        path_so_far = self.name + "/" + path_so_far
+        if self.parent is None:
+            return "/" + path_so_far
+        else:
+            return self.get_full_path(path_so_far)
+
+class JGIFolder(JGIBasePath):
+    """ Directory on the JGI website, acts as a container for JGI files """
+
+
+    def __init__(self, name, parent=None):
+        super(JGIFolder, self).__init__(name, parent) 
+        self.contents = []
+
+    def __str__(self):
+        return self.name + "/"
+
+    def append(self, jgi_base_path):
+        if isinstance(jgi_base_path, JGIBasePath):
+            self.contents.append(jgi_base_path)
+        else:
+            raise ValueError("jgi_base_path object isn't derrived from JGIBasePath. Refusing to add.")
+
+    def print_tree(self, filehandle=sys.stdout, level=0, recursive=True):
+        print("    " * level + str(self))
+        level += 1
+        for path in self.contents:
+
+            # handle folders
+            if isinstance(path, JGIFolder):
+                path.print_tree(filehandle, level=level, recursive=True)
+            # handle files
+            else:
+                print("    " * level + str(path))
+
+    def search(self, search_path):
+        """ 
+        Does a search of a folder and returns all files that match a specified regex.
+        Search path can be recursive by supplying a path separated by / such as "myfolder/myfile"
+        """
+        paths = []
+        
+        # split off the first portion of the path
+        elems = search_path.split("/")
+
+
+        for path in self.contents:
+            match = re.match(elems[0], path.name)
+
+            if match:
+                # checkm if this was the last element of the path
+
+                if len(elems) == 1:
+                    path.reg_match = match
+                    paths.append(path)
+                else:
+                    if isinstance(path, JGIFolder):
+                        try:
+                            paths += path.search("/".join(elems[1:]))
+                        except DataNotAvailable:
+                            pass
+        if paths:
+            return paths
+        else:
+            raise DataNotAvailable("No paths found for search '{}'".format(search_path))
+
+
+class JGIFile(JGIBasePath):
+    """ Class to store data about a file from the XML lookup """
+
+    def __init__(self, parent, attribs):
+        """ Takes a dict of attributes (from the XML parser) """
+        super(JGIFile, self).__init__(attribs["filename"], parent)
+        
+        self.url = attribs["url"]
+        
+        # split out the time zone becuase strptime didn't work with it
+        ts_elems = attribs["timestamp"].split(" ")
+        ts_elems.pop(4)
+        ts = " ".join(ts_elems)
+        self.timestamp = datetime.datetime.strptime(ts, "%a %b %d %H:%M:%S %Y")
+        
+        self.size = attribs["size"]
+        self.byte_size = int(attribs["sizeInBytes"])
+        
+        # some entries don't have a md5
+        try:
+            self.md5 = attribs["md5"]
+        except KeyError:
+            self.md5 = None
+
+    def __str__(self):
+        return "\t".join([self.name, self.size, str(self.timestamp)]) 
+
+
+class JGIOrganism(object):
+    """ Represents an organism entry across JGI and IMG """
+
+
+    IMG_DATA = ['gbk', 'ko', 'cog', 'pfam', 'tigrfam', 'interpro']
+
+
+    def __init__(self, interface, **kwargs):
+        
+        self.interface = interface
+
+        # set download attributes
+        prefix = None
+
+        # set JGI attributes
+        self.proj_id = None
+        self.organism_name = None
+        self.jgi_data_tree = None
+
+        # set IMG attributes
+        self.taxon_oid = None
+
+         
+        valid_kwargs = [
+            "prefix", 
+            "proj_id", "organism_name",
+            "taxon_oid"
+            ]
+        for k, v in kwargs.items():
+            if k not in valid_kwargs:
+                raise TypeError("Invalid kwarg: '{}'".format(k))
+            else:
+                print("Setting self.{} to {}".format(k, v))
+                setattr(self, k, v)
+
+    def print_available_files(self, portal="both"):
+    
+        if portal.lower() == "both":
+            # list both
+            self._print_img_files()
+            print(end="\n\n")
+            self._print_jgi_files()
+        
+        elif portal.lower() == "img":
+            # list IMG
+            self._print_img_files()
+        
+        elif portal.lower() == "jgi":
+            # list JGI
+            self._print_jgi_files()
+
+        else:
+            raise ValueError("portal argument must be one of 'both', 'img', or 'jgi'; not '{}'".format(str(portal)))
+
+    def download_data(self, datatype):
+        """ 
+        Downloads data corresponding to the datatype where datatype is either among the
+        elements of IMG_DATA or data is a tuple corresponding to ("path_regex", "file_regex")
+        """
+
+        if datatype in self.IMG_DATA:
+            # download IMG data
+            pass
+        
+        elif isinstance(datatype, tuple):
+            # parse the download regex and then download JGI
+            files = self._get_jgi_files(datatype)
+            
+            try:
+                prefix = self.prefix
+            except:
+                prefix = self.proj_id
+
+            self.interface.download_jgi_files(files=files, prefix=prefix)
+
+        else:
+            raise ValueError("Download datatype '{}' is invalid.".format(str(datatype)))
+    
+    
+    
+    def _add_children(self, parent, node):
+        """
+        Recursively adds children nodes to the parent node.
+
+        This could be a classmethod.
+        """
+
+        for child in node:
+            if child.tag == "file":
+                parent.append(JGIFile(parent, child.attrib))
+
+            elif child.tag == "folder":
+                folder = JGIFolder(child.attrib["name"], parent)
+                parent.append(folder)
+                self._add_children(folder, node=child)
+
+            else:
+                print("Unknown tag: {}".format(child.tag))
+
+    def _print_jgi_files(self):
+        try:
+            tree = self.jgi_data_tree
+        except AttributeLookupError:
+            raise ValueError("jgi_data_tree attribute must be set to print JGI files")
+
+        print("JGI files")
+        print("^^^^^^^^^")
+        tree.print_tree()
+       
+    def _print_img_files(self):
+        try:
+            taxon_oid = self.taxon_oid
+        except AttributeLookupError:
+            raise ValueError("taxon_oid attrivute must be set to see available IMG files")
+
+        print("IMG files")
+        print("^^^^^^^^^")
+        for f in self.IMG_DATA:
+            print(f)
+   
+    def _get_jgi_files(self, datatype):
+        try:
+            taxon_oid = self.proj_id
+        except AttributeLookupError:
+            raise ValueError("proj_id attribute must be set to download JGI data")
+
+        # split apart the tuple
+        folder_reg, file_reg = datatype
+        
+        # find folders that match the regex
+        try:
+            folders = self.jgi_data_tree.search(folder_reg)
+        except:
+            pass
+
+        # find files in the folder
+        files= []
+        for folder in folders:
+            if isinstance(folder, JGIFolder):
+                files += folder.search(file_reg)
+
+        return files
+
+
+    ###################################
+    ## Attribute lookups
+    #
+
+    def _lookup_proj_id(self):
+        """ 
+        Returns: the JGI project id as a string.
+        Excepts: ValueError
+        """
+            
+        try:
+            my_params = {'section': 'TaxonDetail', 'page': 'taxonDetail', 'taxon_oid': self.taxon_oid}
+        except AttributeLookupError:
+            raise AttributeLookupError("proj_id -> attribute taxon_oid is required to lookup proj_id")
+
+        img_html = self.interface.session.get(IMG_LOOKUP, params=my_params, headers=self.interface.header)
+        
+        # match the keyValue param in the link with digits to allow the keyValue param to
+        # be anywhere within the link 
+        # this will need to be changed if JGI ever adds letters to their ids
+        m = re.search("\"genome-btn download-btn.*href=['\"].*keyValue=(\d*).*['\"]", img_html.text)
+        if m:
+            LOG.info("Proj id lookup successful. proj_id={}".format(m.group(1)))
+            return m.group(1)
+        else:
+            #print("Couldn't find URL for IMG id: {}".format(self.taxon_oid), file=sys.stderr)
+            raise AttributeLookupError("proj_id -> download link not found for taxon_oid '{}' at URL:\n{}".format(self.taxon_oid, img_html.url))
+
+    def _lookup_organism_name(self):
+        """
+        Looks up organism name based on project id
+
+        At the name lookup step it will be obvious if there are portal errors.
+
+        """
+        
+        try:
+            my_params = {'keyName': 'jgiProjectId', 'keyValue': self.proj_id}
+        except AttributeLookupError:
+            raise AttributeLookupError("organism_name -> attribute proj_id must be set to lookup organism name")
+        name_html = self.interface.session.get(LOOKUP, params=my_params)    # use the parent session to maintain cookies
+        #print((self.id, name_html.url))
+       
+
+        # look up the taxon_oid if id isn't already known
+        # need some way to handle this if errors happen
+        # don't want to 
+        if not self.taxon_oid:
+            # there are two potential places to get the taxon_oid
+            taxon_oid_match = re.search('href="https://img.jgi.doe.gov/genome.php\?id=(\d+)"', name_html.text)
+            if taxon_oid_match:
+                self.taxon_oid = taxon_oid_match.group(1)
+            else:
+                taxon_oid_match = re.search('taxon_oid=(\d+)"', name_html.text)
+
+                if taxon_oid_match:
+                    self.taxon_oid = taxon_oid_match.group(1)
+
+
+        # parse the name from the organism info page
+        # search for href="/(NAME)/ANYTHING.info.html
+        match = re.search('href="/(.*)/.*\.info\.html', name_html.text)
+
+        if match:
+            self.name = match.group(1)       # get the first matched group
+            return match.group(1)
+        else:
+            raise AttributeLookupError("organism_name ->  lookup failed for proj_id {}. URL={}".format(self.proj_id, name_html.url))
+
+    def _lookup_taxon_oid(self):
+        """
+        Looks up taxon_oid based on project id
+
+        """
+        try:
+            my_params = {'keyName': 'jgiProjectId', 'keyValue': self.proj_id}
+        except AttributeLookupError:
+            raise AttributeError("taxon_oid -> attribute proj_id must be set to lookup taxon_oid")
+
+        info_html = self.parent.session.get(LOOKUP, params=my_params)    # use the parent session to maintain cookies
+       
+        # there are two potential places to get the taxon_oid
+        taxon_oid_match = re.search('href="https://img.jgi.doe.gov/genome.php\?id=(\d+)"', name_html.text)
+        if taxon_oid_match:
+            self.taxon_oid = taxon_oid_match.group(1)
+        else:
+            taxon_oid_match = re.search('taxon_oid=(\d+)"', name_html.text)
+
+            if taxon_oid_match:
+                self.taxon_oid = taxon_oid_match.group(1)
+            else:
+                raise AttributeLookupError("taxon_oid -> lookup failed for project id: {}".format(self.proj_id))
+
+    def _lookup_jgi_data_tree(self):
+        """
+        Parses the XML structure to return a parent (root) node of a tree of JGIBasePath derrived objects.
+
+        XML Structure Expected:
+
+        <organismDownloads>
+            <folder1>
+                <file1>
+                <file2>
+            </folder>
+            <folder2>
+                <file1>
+            </folder>
+        </organismDownloads>
+        """
+        
+        try:
+            link = XML + self.organism_name
+        except AttributeLookupError:
+            raise AttributeLookupError("jgi_data_tree -> attribute organism_name is required for lookup of available files")
+
+        xml = self.interface.session.get(link).text
+
+        root = etree.fromstring(xml)
+
+        # little sanity check to make sure reading the XML format expected
+        assert root.tag == "organismDownloads"
+
+        parent = JGIFolder("", parent=None) 
+
+        self._add_children(parent, root)
+
+        return parent 
+
+
+    @property
+    def prefix(self):
+        if self.__prefix is None:
+            return ""
+        else:
+            return self.__prefix
+    @prefix.setter
+    def prefix(self, value):
+        self.__prefix = value
+
+    @property
+    def proj_id(self):
+        if isinstance(self.__proj_id, AttributeLookupError):
+            raise self.__proj_id
+        
+        elif self.__proj_id is None:
+            try:
+                self.proj_id = self._lookup_proj_id()
+            except AttributeLookupError as e:
+                self.proj_id = e
+                raise
+            except RuntimeError:        # this waits for maximum recurson depth, probably a better way
+                raise ValueError("Both taxon_oid and proj_id cannot be None. One must be manually set to an appropriate value.")
+
+
+        
+            
+        return self.__proj_id
+    @proj_id.setter
+    def proj_id(self, value):
+        self.__proj_id = value
+   
+    @property
+    def organism_name(self):
+       
+        if isinstance(self.__organism_name, AttributeLookupError):
+            raise self.__organism_name
+
+        elif self.__organism_name is None:
+            try:
+                self.organism_name = self._lookup_organism_name()
+
+            except AttributeLookupError as e:
+                self.organism_name = e
+                raise
+            
+        return self.__organism_name
+    @organism_name.setter
+    def organism_name(self, value):
+        self.__organism_name = value
+
+    @property
+    def taxon_oid(self):
+        if isinstance(self.__taxon_oid, AttributeLookupError):
+            raise self.__organism_name
+
+        elif self.__taxon_oid is None:
+            print("taxon_oid is NONE")
+            try:
+                self.taxon_oid = self._lookup_taxon_oid()
+            except AttributeLookupError as e:
+                self.taxon_oid = e
+                raise
+            except RuntimeError:        # this waits for maximum recurson depth, probably a better way
+                raise ValueError("Both taxon_oid and proj_id cannot be None. One must be manually set to an appropriate value.")
+
+        return self.__taxon_oid
+    @taxon_oid.setter
+    def taxon_oid(self, value):
+        self.__taxon_oid = value
+
+    @property
+    def jgi_data_tree(self):
+        if isinstance(self.__jgi_data_tree, AttributeLookupError):
+            raise self.__jgi_data_tree
+
+        elif self.__jgi_data_tree is None:
+            try:
+                self.jgi_data_tree = self._lookup_jgi_data_tree()
+            except AttributeLookupError as e:
+                self.jgi_data_tree = e
+                raise
+
+        return self.__jgi_data_tree
+    @jgi_data_tree.setter
+    def jgi_data_tree(self, value):
+        self.__jgi_data_tree = value
+
+
 
 class JGIEntry(object):
     """ Class for looking up data on JGI """
@@ -64,6 +547,9 @@ class JGIEntry(object):
         self.name = None
         self.data_tree = None
         self.taxon_oid = None
+
+
+
 
     def _lookup_name(self):
         """
@@ -112,7 +598,6 @@ class JGIEntry(object):
             # print("Name not found for id: {}".format(str(self.id)))
             # return ""
             # instead of return, might be nice to remove the reference in the parent list
-
     def _prepare_entry(self):
 
         if self.name is None:
@@ -124,6 +609,7 @@ class JGIEntry(object):
         self.data_tree = self._parse_xml()
 
     # Methods to build data tree
+
     def _parse_xml(self):
         """
         Parses the XML structure to return a nested hash of folders and files available.
@@ -369,8 +855,8 @@ class IMGEntry(object):
     to interact with the CGI on IMG's web portal to download a different set of data.
     """
 
-    DATA_TYPES = ['fasta', 'gbk', 'ko', 'cog', 'pfam', 'tigrfam', 'interpro']
 
+    DATA_TYPES = ['fasta', 'gbk', 'ko', 'cog', 'pfam', 'tigrfam', 'interpro']
 
     def __init__(self, parent, id, prefix=""):
         self.parent = parent
@@ -382,7 +868,7 @@ class IMGEntry(object):
 
         #self.name = self._lookup_name()
 
-    def lookup_proj_id(self):
+    def _lookup_proj_id(self):
         """ 
         Returns: the JGI project id as a string.
         Excepts: ValueError
@@ -805,6 +1291,10 @@ class JGIInterface(object):
         self.force = force
         self.resume = resume
 
+        # header to display to the website
+        self.header = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:24.0) Gecko/20140924 Firefox/24.0 Iceweasel/24.8.1'}
+
+
 
 
     @staticmethod
@@ -897,7 +1387,65 @@ class JGIInterface(object):
             
         return items
 
-    def download_data(self, url, local_path):
+    @staticmethod
+    def _resolve_path_conflicts(files, newest_only=False):
+        """ 
+        Resolves multiple files attempting to be downloaded to the same local path.
+        Either adds the file date or keeps only the newest
+        """
+
+        # map file to suffix
+        file_dict = {}
+        for file in files:
+            try:
+                suffix = file.reg_match.group(1)
+            except IndexError:
+                suffix = file.name
+            file_dict[file] = suffix
+
+        # find any repeated suffices
+        suf_count = {}
+        for suf in file_dict.values():
+            suf_count[suf] = suf_count.get(suf, 0) + 1
+        repeated_sufs = [suf for suf in suf_count if suf_count[suf] > 1]
+
+
+        #
+        ## Make a new dict with unique sufs
+        #
+
+        # add the unique sufs
+        # this line is arbitrarily complex. Basically just transfers any key with a value that is
+        # not in the repeated_sufs list to the new dict
+        new_f_dict = {k: file_dict[k] for k in file_dict if file_dict[k] not in repeated_sufs}
+        
+        # handle any duplicated sufs 
+        for suf in [suf for suf in suf_count if suf_count[suf] > 1]:
+            files_w_suf = [f for f in file_dict if file_dict[f] == suf]
+            
+            if newest_only:
+                newest = sorted(files_w_suf, key=lambda x: x.timestamp, reverse=True)[0]
+                new_f_dict[newest] = suf
+            else:
+                # prepend date to the suffix
+                for file in files_w_suf:
+                    new_f_dict[file] = file.timestamp.strftime("%Y%b%d") + "." + suf
+                
+            
+        #### Check that new_f_dict is unique now
+
+        return new_f_dict
+
+    def download_jgi_files(cls, files, prefix="organism"):
+        file_dict = cls._resolve_path_conflicts(files, newest_only=True)
+        
+        for file, suffix in file_dict.items():
+            local_path = prefix + "." + suffix
+            if cls.check_local_path(local_path):
+                cls._download_data(DATA + file.url, local_path)
+        
+
+    def _download_data(self, url, local_path):
         """ 
         Downloads a file in chunks.
         Returns: Nothing
@@ -1079,7 +1627,24 @@ def main(args):
         if failed_ids:
             print("\n\nThere were errors in fetching the available files for the following ids:")
             [print("    " + entry.id) for entry in failed_ids]
+
+
+def main2(args):
+    """
+    Main function to manipulate the classes to download data.
     
+    Maybe should be incorporated into JGIInterface.
+    """
+    
+    interface = JGIInterface(args.login, force=args.force, convert=args.convert, resume=args.resume)
+    
+    org = JGIOrganism(interface, taxon_oid=args.ids)
+    return org
+    print(org.taxon_oid)
+    print(org.proj_id)   
+    sys.exit()
+
+
 if __name__ == "__main__":
 
     os.nice(20)     # give this program lowest priority to give up CPU to others while downloads are going on
@@ -1188,5 +1753,5 @@ the file is complete before skipping
    
     args = parser.parse_args()
 
-    main(args)
+    org = main2(args)
 
