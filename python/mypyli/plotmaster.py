@@ -7,27 +7,24 @@ def histogram(data, bins):
     Returns a matplotlib ax object or a histogram, specializes in 
     making histograms with uneven bins
     """
+    
+    print(data[0:99])
 
-    hist, h_bins = np.histogram(data, bins=bins)
+    hist, h_bins = np.histogram(data[0:99], bins=bins)
     fig = plt.figure()
     ax = fig.add_subplot(111)
 
-    #print(hist)
-    #print(h_bins)
+    print(hist)
+    print(h_bins)
 
     ax.bar(range(len(hist)), height=hist, align='edge', width=1)
-    ax.set_xlim([-1, len(hist)])       # x vals with a 1 pad on each side
+    ax.set_xlim([0, len(hist)])       # x vals with a 1 pad on each side
+    ax.set_xticks(range(len(h_bins)))
+    #ax.set_xticks([0] + [str(bin) for bin in bins])
     ax.set_xticklabels([0] + [str(bin) for bin in bins])
     
     return ax
 
-def abundance_plot(otu_dataframe, relative=True):
-    """ Make abundance plot where otu_table is a pandas dataframe with col names as samples and row names as organisms."""
-
-    if relative:
-        otu_dataframe = otu_dataframe.apply(lambda x: x / np.sum(x), axis=0)
-
-        print(otu_dataframe)
 
 def stacked_bar_plot(data, stack_cols, colors=["blue", "green", "red", "cyan", "magenta", "yellow", "black", "white"], log=False):
     """ 
