@@ -50,5 +50,6 @@ def stacked_bar_plot(data, stack_cols, colors=["blue", "green", "red", "cyan", "
 
 def savefig(ax, filename, height=8.5, width=11):
     fig = ax.get_figure()
+    fig.tight_layout()
     fig.savefig(filename)
     #fig.savefig(filename, bbox_extra_artists=fig.artists, bbox_inches='tight')

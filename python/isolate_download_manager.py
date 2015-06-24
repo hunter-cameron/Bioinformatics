@@ -7,10 +7,12 @@ import pandas
 import getpass
 import shutil
 import tarfile
+import logging
 
 from mypyli import utilities
-from mypyli.download_from_JGI import JGIInterface
+from mypyli.jig_interface import JGIInterface, JIGOrganism
 
+LOG = logging.getLogger(__name__)
 
 class MissingDataError(ValueError):
     """ Exception to raise when trying to get the path for data that isn't present. """
@@ -45,12 +47,7 @@ class Isolate(object):
 
     def __init__(self, taxon_oid):
         # JGI information
-        self.taxon_oid = name
-        self.proj_id = None
-        self.organism_name = None
-
-        self.freezer_id = None
-        self.taxonomy = None
+        
 
         # Paths to data
         self.gbk = None
@@ -72,7 +69,7 @@ class IsolateManager(object):
     DATA_EXT = {
             "bundle": "/",
             "gbk": ".gbk",
-            "genome": "fna",
+            "genome": ".fna",
             "genes": ".genes.faa",
             "ko": ".ko.tsv",
             "cog": ".cog.tsv",
@@ -80,6 +77,22 @@ class IsolateManager(object):
             "tigrfam": ".tigrfam.tsv",
             "interpro": ".interpro.tsv"
             }
+
+    EXT_TO_DTYPE = {
+            "/": "bundle",
+            ".gbk": "gbk",
+            ".fna": "genome",
+            ".genes.faa": "genes",
+            ".ko.tsv": "ko",
+            ".cog.tsv": "cog",
+            ".pfam.tsv": "pfam",
+            ".tigrfam.tsv": "tigrfam",
+            ".interpro.tsv": "interpro",
+            ".fna.nhr": "blast_db",
+            ".fna.nin": "blast_db",
+            ".fna.nsq": "blast_db",
+            }
+            
 
     DEFAULT_DATABASE = "isolate_DB"
 
@@ -102,7 +115,6 @@ class IsolateManager(object):
         else:
             self.database_path == base_dir + "/" + database_path
 
-
     def _read_database(self):
         """ Reads a database into memory """
         self.database = pandas.read_csv(self.database_path, sep="\t")
@@ -112,11 +124,21 @@ class IsolateManager(object):
             self.database.set_index(self.database["taxon_oid"].astype(str), inplace=True)
             self.database.drop("taxon_oid", axis=1, inplace=True)            
             self.isolates = list(self.database.index)
-            
+    
+
+    def read_database(self):
+        """ Reads a database into Isolate Objects """
+        self.database = pandas.read_csv(self.database_path, sep="\t")
+        self.database.fillna("NA", inplace=True)
+
+        if "taxon_oid" in self.database.columns:
+            self.database.set_index(self.database["taxon_oid"].astype(str), inplace=True)
+            self.database.drop("taxon_oid", axis=1, inplace=True)            
+            self.isolates = list(self.database.index)
+
 
     def write_database(self, path):
         self.database.to_csv(path, sep="\t", na_rep="NA", index_label="taxon_oid")
-
 
     def add_isolate(self, taxon_id):
         if taxon_id not in self.isolates:
@@ -234,7 +256,7 @@ class IsolateManager(object):
             # print(file)
             file_sizes[file] = os.path.getsize(self.base_dir + "/" + dir + "/" + file)
             # All data files should be structured "isolate.datatype.anythingelse"
-            isolate, data = file.split(".")[0:2]
+            isolate, data = file.split(".")[0, 2]
 
             # check if the data is of the right type
             if data != dir:
@@ -294,53 +316,71 @@ class IsolateManager(object):
 
     def get_data(self, jgi_interface=None, missing_data=None):
         """ Adds data as specified by the to_add dict """
+   
+        # keep this to avoid redundant lookups
+        organisms = {}
 
         if missing_data is None:
             missing_data = self.missing_data
             
-        if jgi_interface:
+        for isolate, missing in missing_data:
+            # try to get the bundle first
+            if "bundle" in missing and jgi_interface is not None:
+                org = JGIOrganism(interface, taxon_oid=isolate)
+                organisms[isolate] = org
+
+                self._download_from_jgi(org, "bundle")
+
+            # data to get from bundle
+            if "genome" in missing:
+                self._extract_from_bundle(isoate, "genome")
+
             
-            #
-            ## start with remote data
-            #
+            # data to download from JGI
+            for dtype in ["gbk", "ko", "cog", "pfam", "tigrfam", "interpro"]:
+                if dtype in missing and jgi_interface is not None:
+                    try:
+                        org = organisms[isolate]
+                    except KeyError:
+                        org = JGIOrganism(interface, taxon_oid=isolate)
+                        organisms[isolate] = org
 
-            # make handle for each of the taxon oids
-            jgi_interface.make_entries("|".join(missing_data), "taxon_oid", "|".join(list(missing_data.keys())))
+                    self._download_from_jgi(org, dtype)
 
-            # loop through each isolate
-            for entry in jgi_interface.entries:
-                # loop through each missing file
-                missing = missing_data[entry.id]
-                for dtype in missing:
-                    
-                    # download what we can from JGI, should be try-excepted
-                    # this doesn't try to change the name of the resultant file
-                    # need to delete .tar.gz after done
-                    if dtype == "bundle":
-                        centry = jgi_interface.convert_entry(entry)
-                        centry.download_data(("IMG Data", ".*.(tar.gz)$"))
-                        tar = tarfile.open(entry.id + ".tar.gz", 'r:gz')                        
-                        tar.extractall(path=self.base_dir + "/" + "bundle")
+            # data I need to derrive from other files
+            if "genes" in missing:
+                try:
+                    self._gbk2faa(self.get_data_path(isolate, "gbk"), 
+                            self.get_data_path(isolate, "genes", False))
+                except MissingDataError as e:
+                    LOG.warning("Cannot get genes for {} gbk datatype required.".format(isolate))
+
+            if "blast_db" in missing:
+                pass
 
 
-                    if dtype in ['gbk', 'ko', 'cog', 'pfam', 'tigrfam', 'interpro']:
-                        entry.download_data(dtype)
+    def _download_from_jgi(self, organism, datatype):
+        """ Downloads a datatype for a given organism """
+        organism.download_data(d_datatype)
 
-                        # move the downloaded file to the proper location
-                        shutil.move(entry.id + self.DATA_EXT[dtype],
-                            self.get_data_path(entry.id, dtype, check_exists=False))
+        # download what we can from JGI, should be try-excepted
+        # this doesn't try to change the name of the resultant file
+        # need to delete .tar.gz after done
+        if datatype == "bundle":
+            organism.download_data(("IMG Data", ".*.(tar.gz)$"))
+            tar = tarfile.open(organism.taxon_oid + ".tar.gz", 'r:gz')                        
+            tar.extractall(path=self.base_dir + "/" + "bundle")
+            os.remove(organism.taxon_oid + ".tar.gz")
 
-        else:
-            #
-            ## add local data
-            #
+        # download from IMG
+        if datatype in ['gbk', 'ko', 'cog', 'pfam', 'tigrfam', 'interpro']:
+            organism.download_data(dtype)
 
-            for isolate, missing in missing_data.items():
-                for datatype in ["genes"]:
-                    if datatype in missing:
-                        if datatype == "genes":
-                            self._gbk2faa(self.get_data_path(isolate, "gbk"), 
-                                    self.get_data_path(isolate, "genes", False))
+            # move the downloaded file to the proper location
+            shutil.move(organism.taxon_oid + self.DATA_EXT[dtype],
+                        self.get_data_path(organism.taxon_oid, dtype, check_exists=False))
+
+ 
 
     def _extract_from_bundle(self, isolate, datatype):
         """ 
@@ -350,11 +390,24 @@ class IsolateManager(object):
         """
         
         datatype_to_bundle = {
-                "fasta": 
+                "genome": isolate + ".fna",
+                }
+        try:
+            bundle = self.get_data_path(isolate, datatype, check_exists=True)
+        except MissingDataError:
+            # need to do something here because bundle hasn't been downloaded
+            return
 
-
-        bundle = self.get_data_path(isolate, datatype, check_exists=True)
-         
+        # look for the file
+        for file in os.listdir(bundle):
+            if file == datatype_to_bundle[datatype]:
+                src = bundle + "/" + file
+                dest = self.get_data_path(isolate, datatype, check_exists=False)
+                LOG.info("Copying {} to {}...")
+                try:
+                    shutil.copy(src, dest)
+                except Exception as e:
+                    LOG.warning("Copy failed!\n" + str(e))
 
 
     def _gbk2faa(self, genbank, out_path):
@@ -537,7 +590,7 @@ class UserInterface(object):
             self.current_state == "main"
             username = input("JGI username (email): ")
             password = getpass.getpass("JGI Password: ")
-            jgi_interface = JGIInterface("{}\n{}".format(username, password), convert=True)
+            jgi_interface = JGIInterface(username=username, password=password, newest_only=True)
             self.manager.get_data(jgi_interface)
         elif style == "local":
             self.manager.get_data()
