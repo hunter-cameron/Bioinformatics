@@ -18,6 +18,8 @@ import time
 import datetime
 from lxml import etree
 import logging
+from html.parser import HTMLParser
+import traceback
 
 # TODO Add some sort of file check to ensure the entire file was downloaded, specifically for the resume option. 
 
@@ -169,6 +171,117 @@ class JGIFile(JGIBasePath):
     def __str__(self):
         return "\t".join([self.name, self.size, str(self.timestamp)]) 
 
+class MetadataParser(HTMLParser):
+    def __init__(self):
+        super(MetadataParser, self).__init__()
+        self.data_dict = {}
+
+        # stores the current data key
+        self.cur_key = None
+
+        # stores what to do with the data
+        self.slurp_mode = None
+
+    def handle_starttag(self, tag, attr):
+        if tag == "th":
+            # headers are the keys
+            self.slurp_mode = "key"
+        elif tag == "td":
+            self.slurp_mode = "data"
+
+    def handle_data(self, data):
+        data = data.strip()
+        if data:
+            if self.slurp_mode == "key":
+                self.cur_key = data.strip()
+            elif self.slurp_mode == "data":
+                self.data_dict[self.cur_key] = self.data_dict.get(self.cur_key, "") + data.strip()
+
+    def get_metadata(self, table_html):
+        self.feed(table_html)
+        
+        # map JGI's names to more friendly ones
+        rough_to_standard = {
+                "Study Name (Proposal Name)": "proposal",
+                "Organism Name": "organism_name",
+                "Taxon ID": "taxon_oid",
+                "IMG Submission ID": "submission_id",
+                "NCBI Taxon ID": "ncbi_tax_id",
+        #        "GOLD ID in IMG Database": "",
+        #        "GOLD Analysis Project Id": "",
+        #        "GOLD Analysis Project Type": "",
+                "Submission Type": "submission",
+        #        "External Links": "",
+                "Lineage": "lineage",
+                "Sequencing Status": "seq_status",
+                "Sequencing Center": "seq_center",
+        #        "IMG Release": "",
+        #        "Comment": "",
+        #        "Release Date": "",
+        #        "Add Date": "",
+        #        "Modified Date": "",
+        #        "Distance Matrix Calc. Date": "",
+                "High Quality": "high_quality",
+        #        "IMG Product Flag": "img_product",
+                "Is Public": "public",
+        #        "Project Information": "",
+        #        "Bioproject Accession": "",
+        #        "Biosample Accession": "",
+                "Culture Type": "culture_type",
+        #        "Uncultured Type": "culture_type",     # for single cells, their type is listed as uncultured
+                "GOLD Sequencing Strategy": "seq_strategy",
+                "Gram Staining": "gram",
+        #        "Seq Status": "",
+                "Sequencing Method": "seq_method",
+        #        "Type Strain": ""
+            }
+
+
+        # instead of using nice names, maybe it would be best to use the full JGI name?
+        # that would be most conducive to essentially having a local copy of JGI's data
+        # I still only want a subset of the headers
+        interesting_data = {
+                "Study Name (Proposal Name)",
+                "Organism Name",
+                "Taxon ID",
+                "IMG Submission ID",
+                "NCBI Taxon ID",
+        #        "GOLD ID in IMG Database",
+        #        "GOLD Analysis Project Id",
+        #        "GOLD Analysis Project Type",
+                "Submission Type",
+        #        "External Links",
+                "Lineage",
+                "Sequencing Status",
+                "Sequencing Center",
+        #        "IMG Release",
+        #        "Comment",
+        #        "Release Date",
+        #        "Add Date",
+        #        "Modified Date",
+        #        "Distance Matrix Calc. Date",
+                "High Quality",
+        #        "IMG Product Flag",
+                "Is Public",
+        #        "Project Information",
+        #        "Bioproject Accession",
+        #        "Biosample Accession",
+                "Culture Type",
+                "Uncultured Type",      # single cells have this field instead
+                "GOLD Sequencing Strategy",
+                "Gram Staining",
+        #        "Seq Status",
+                "Sequencing Method",
+        #        "Type Strain",
+            }
+
+
+        # make a polished dict (to give some consistency to available data and reduce KeyErrors)
+        polished_dict = {}
+        for key in interesting_data:
+            polished_dict[key] = self.data_dict.get(key, None)
+
+        return polished_dict
 
 class JGIOrganism(object):
     """ 
@@ -274,6 +387,29 @@ class JGIOrganism(object):
         else:
             raise ValueError("portal argument must be one of 'both', 'img', or 'jgi'; not '{}'".format(str(portal)))
         print("####################")
+
+    def get_metadata(self):
+        """ Gets a bunch of metadata from the IMG portal page. Returns is as a dict """
+
+        try:
+            my_params = {'section': 'TaxonDetail', 'page': 'taxonDetail', 'taxon_oid': self.taxon_oid}
+        except AttributeLookupError:
+            raise AttributeLookupError("proj_id -> attribute taxon_oid is required to lookup proj_id")
+
+        LOG.debug("Getting metadata for {}".format(str(self)))
+
+        img_portal = self.interface.session.get(IMG_LOOKUP, params=my_params, headers=self.interface.header)
+        
+        # get just the data table
+        match = re.search("<p></p><a name='overview' href='#'><h2>Overview</h2> </a>(.*?)</table>", img_portal.text, re.DOTALL)
+        if match:
+            md_table = match.group(1)
+        else:
+            raise PortalError("Could not find the metadata table. The HTML is probably different than expected.\n{}".format(str(self)))
+
+        parser = MetadataParser()
+        return parser.get_metadata(md_table)
+
 
     def download_data(self, datatype):
         """ 
@@ -606,22 +742,23 @@ class JGIOrganism(object):
         Looks up taxon_oid based on project id
 
         """
+
         try:
             my_params = {'keyName': 'jgiProjectId', 'keyValue': self.proj_id}
         except AttributeLookupError:
             raise AttributeError("taxon_oid -> attribute proj_id must be set to lookup taxon_oid")
 
-        info_html = self.parent.session.get(LOOKUP, params=my_params)    # use the parent session to maintain cookies
+        info_html = self.interface.session.get(LOOKUP, params=my_params)    # use the parent session to maintain cookies
        
         # there are two potential places to get the taxon_oid
-        taxon_oid_match = re.search('href="https://img.jgi.doe.gov/genome.php\?id=(\d+)"', name_html.text)
+        taxon_oid_match = re.search('href="https://img.jgi.doe.gov/genome.php\?id=(\d+)"', info_html.text)
         if taxon_oid_match:
-            self.taxon_oid = taxon_oid_match.group(1)
+            return taxon_oid_match.group(1)
         else:
-            taxon_oid_match = re.search('taxon_oid=(\d+)"', name_html.text)
+            taxon_oid_match = re.search('taxon_oid=(\d+)"', info_html.text)
 
             if taxon_oid_match:
-                self.taxon_oid = taxon_oid_match.group(1)
+                return taxon_oid_match.group(1)
             else:
                 raise AttributeLookupError("taxon_oid -> lookup failed for project id: {}".format(self.proj_id))
 
@@ -713,12 +850,12 @@ class JGIOrganism(object):
     @property
     def taxon_oid(self):
         if isinstance(self._taxon_oid, AttributeLookupError):
-            raise self._organism_name
+            raise self._taxon_oid
 
         elif self._taxon_oid is None:
-            print("taxon_oid is NONE")
             try:
                 self.taxon_oid = self._lookup_taxon_oid()
+
             except AttributeLookupError as e:
                 self.taxon_oid = e
                 raise
@@ -746,6 +883,7 @@ class JGIOrganism(object):
     @jgi_data_tree.setter
     def jgi_data_tree(self, value):
         self._jgi_data_tree = value
+
 
 
 class JGIInterface(object):
@@ -1124,7 +1262,11 @@ def standard_pipeline(args):
         else:
             names = None
         organisms = init_organisms(interface, ids, args.id_type, names)
- 
+
+        # if the manual option has been passed, exit here
+        if args.manual:
+            return organisms
+
         # check for args.get
         if args.get:
             for datatype in args.get:
@@ -1276,6 +1418,11 @@ the file is complete before skipping
 sets the verbosity level for the logging module
 
     """, choices=["DEBUG", "INFO", "WARNING"], default="INFO")
+    parser.add_argument("-m", "--manual", help="""
+don't use the automated workflow, just give me a a variable
+"organisms" with the organisms from my ids. Meant to be used
+for interactive python usage
+    """, action="store_true")
     
    
     args = parser.parse_args()
@@ -1284,4 +1431,3 @@ sets the verbosity level for the logging module
     logging.basicConfig(level=args.v)
 
     organisms = standard_pipeline(args)
-    request = None
