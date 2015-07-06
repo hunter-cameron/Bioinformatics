@@ -26,6 +26,8 @@ import traceback
 # TODO Genbank file with > 100 scaffolds -- not sure if this is possible
         # Problem = server-side script checks for scaffold count and demands an email
 
+# TODO With JGI's initiative to make portals for all IMG data, there are some weird naming conventions for things that were sequenced at other locations so do not have a JGI portal. So best I can tell, such projects do not have a project name but the download link (with a different format) gives the organism lookup name directly.
+        # Right now, this isn't a big enough problem to address but, if it becomes bigger, something will need to be done.
 
 LOG = logging.getLogger(__name__)
 
@@ -416,7 +418,8 @@ class JGIOrganism(object):
         Downloads data corresponding to the datatype where datatype is either among the
         elements of IMG_DATA or data is a tuple corresponding to ("path_regex", "file_regex")
         """
-        
+ 
+        LOG.debug("Trying to download '{}' for {}".format(str(datatype), str(self))) 
         if datatype in self.IMG_DATA:
             try:
                 # download IMG data
@@ -556,7 +559,7 @@ class JGIOrganism(object):
         
             page_dict = {
                     'ko': 'ko',
-                    'cog': 'cog',
+                    'cog': 'cogs',
                     'pfam': 'pfam',
                     'tigrfam': 'tigrfam',
                     'interpro': 'ipr'
@@ -591,7 +594,8 @@ class JGIOrganism(object):
                 raise PortalError("Portal claims no scaffolds were selected (this is a true portal error?).")
             
             
-            raise PortalError("PID not found for {}.".format(taxon_oid))
+            LOG.debug(request.url)
+            raise PortalError("PID not found for datatype '{}' in {}.".format(datatype, str(self)))
 
     @staticmethod
     def _get_img_download_payload(datatype, tmpfile):
@@ -1059,12 +1063,15 @@ class JGIInterface(object):
 
     def download_img_file(self, payload, prefix, datatype):
 
-        LOG.debug("Downloading IMG file: '{}'".format(datatype))
         local_path = prefix + "." + JGIOrganism.IMG_DATA_SUF[datatype]
-        request = self.session.post(IMG_DATA, data=payload, headers=self.header)
+        if datatype == "gbk":
+            request = self.session.post(IMG_LOOKUP, data=payload, headers=self.header)
+        else:
+            request = self.session.post(IMG_DATA, data=payload, headers=self.header)
         if self._proceed_with_download(local_path, request=request):
             with open(local_path, 'w') as OUT:
                 OUT.write(request.text)
+            LOG.info("Downloading {} for {} to\n    {}\n\n".format(datatype, prefix, local_path))
             return "successful"
         else:
             return "skipped"
@@ -1252,7 +1259,7 @@ def standard_pipeline(args):
     if args.download:
         
         local_path = args.download.split("/")[-1]
-        interface.download_data(args.download, local_path)
+        interface._download_data(args.download, local_path)
         sys.exit()
     
     else:
@@ -1357,7 +1364,7 @@ as a single id or a list of ids separated by '|' at the command prompt
     parser.add_argument("-id_type", help="""
 the type of id supplied
 
-    """, choices=['proj_id', 'taxon_oid'], required=True)
+    """, choices=['proj_id', 'taxon_oid'])
     parser.add_argument("-names", help="""
 file in the same order of 'ids' that specify a prefix for each
 id. Alternatively, can be a list on the command line separated
