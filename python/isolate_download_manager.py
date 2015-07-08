@@ -9,6 +9,7 @@ import shutil
 import tarfile
 import logging
 import subprocess
+from Bio import SeqIO
 
 from mypyli import utilities
 from mypyli.jgi_interface import JGIInterface, JGIOrganism
@@ -200,8 +201,11 @@ class Isolate(object):
         """ Looks up metadata from JGI and stores it as an attribute """
 
         if self.metadata:
-            LOG.warning("Metadata already present for {}. Skipping lookup. Specify overwrite=True to force.")
-            return
+            if overwrite:
+                LOG.warning("Overwriting metadata for {}".format(str(self)))
+            else:
+                LOG.warning("Metadata already present for {}. Skipping lookup. Specify overwrite=True to force.".format(str(self)))
+                return
 
         try:
             self.metadata = self.organism.get_metadata()
@@ -211,7 +215,10 @@ class Isolate(object):
     def update_data(self, dtype=None, overwrite=False):
         """ Tries to get data according to the dtype; if dtype is none, tries to get all missing data """
         if dtype is None:
-            dtype = self.get_missing().keys()
+            if overwrite:
+                dtype = self.datatypes.keys()
+            else:
+                dtype = self.get_missing().keys()
         else:
             if isinstance(dtype, str):
                 dtype = [dtype]
@@ -219,7 +226,6 @@ class Isolate(object):
             #
             ## make sure the input dtypes are ok
             #
-
             filtered_dtype = []
             for d in dtype:
                 # check if valid datatypes
@@ -231,7 +237,7 @@ class Isolate(object):
                 elif self.datatypes[d].present:
                     if not overwrite:
                         LOG.warning("Datatype '{}' is already present for {}. Omitting. Specify 'overwrite=True' to overwrite.".format(d, str(self)))
-                    continue
+                        continue
 
                 filtered_dtype.append(d)
 
@@ -602,6 +608,9 @@ class IsolateManager(object):
                 prefix = self.base_dir + "/" + data_tup[0]
                 isolate.add_datatype(data_tup[0], (prefix, data_tup[1]))
 
+            # add the connection to JGI if there is one
+            if self.jgi_interface:
+                isolate.make_organism(self.jgi_interface)
 
             self.isolates[taxon_oid] = isolate
             return isolate
@@ -651,199 +660,112 @@ class IsolateManager(object):
 
         self._make_organisms()
 
-    #######################
-    ## Old Methods
-    #
-
-    def _update_database(self):
-
-        # if there is no database, create one
-        if self.database is None:
-            self.database = pandas.DataFrame(index=self.isolates)
-
-        # add any extra isolates to database if necessary
-        for isolate in self.isolates:
-            if isolate not in self.database.index:
-                new_isolate = pandas.Series([None] * len(self.database.columns), index=self.database.columns, name=isolate)
-                self.database = self.database.append(new_isolate)
-        
-        print(self.database.head())
-
-        missing_data = {}
-        extra_data = {}
-        potential_duplicates = {}
-        non_data = []
-        for dir in self.DATA_DIRS:
-            # add the dir for the data if is isn't there
-            if dir not in self.database.columns:
-                self.database[dir] = None
-                self.column_order += dir
-
-            report = self.check_for_files(dir)
-           
-            # update the database
-            for isolate in report.found_ids:
-
-                #print(isolate in list(self.database.index))
-                #print(str(isolate))
-                if isolate in self.isolates:
-                    self.database.set_value(isolate, dir, "yes")
-
-            #
-            ## get some summary info from the update
-            #
-
-            # collect missing data types for each isolate
-            for isolate in report.missing_ids:
-                try:
-                    missing_data[isolate].append(dir)
-                except KeyError:
-                    missing_data[isolate] = [dir]
-                
-            # collect information about extra isolates (that may should be added?)
-            for isolate in report.extra_ids:
-                try:
-                    extra_data[isolate].append(dir)
-                except KeyError:
-                    missing_data[isolate] = [dir]
-
-            # report any potential duplicates
-            for tup in report.duplicates:
-                try:
-                    potential_duplicates[dir].append(tup)
-                except KeyError:
-                    potential_duplicates[dir] = [tup]
-
-            # report non-data files
-            for file in report.invalid_files:
-                non_data.append(file)
-
-
-
-        self.missing_data = missing_data
-        
-        #
-        ## Print a summary 
-        #
-
-        print("Database Summary")
-        print("================", end="\n\n")
-
-        print("Isolates in database: " + str(len(self.isolates)), end="\n\n")
-
-        print("Isolates with missing data: " + str(len(missing_data)))
-        for isolate, datas in missing_data.items():
-            print("    " + isolate + ": " + str(datas))
-        print()
-
-        print("Isolates not in database with data found: " + str(len(extra_data)))
-        for isolate, datas in extra_data.items():
-            print("    " + isolate + ": " + str(datas))
-        print()
-
-        print("Potentially duplicated files: " + str(len(potential_duplicates)))
-        for data_type, tups in potential_duplicates.items():
-            print("    " + data_type + ":")
-            for tup in tups:
-                print("        " + str(tup))
-        print()
-
-        print("Non-data files: " + str(len(non_data)))
-        for file in non_data:
-            print("    " + file)
-
-    def _check_for_files(self, dir):
+    def check_for_new_isolates(self, projects):
         """ 
-        searches a directory for downloaded files and looks for duplicates
-        returns a DataReport.
+        Checks for new isolates in a list of specfied projects. 
+
+        Returns a dict of isolates not in database taxon_oid -> Isolate to allow easy
+        lookup of metadata to determine if the isolate should be added.
         """
-        if dir not in self.DATA_DIRS:
-            raise ValueError("Directory must be one of: " + str(DATA_DIRS))
+        # get all the taxon_oids from all the projects
+        taxon_oids = set()
+        for project in projects:
+            tids = self.jgi_interface.get_taxon_oids_for_proposal(project)
+            taxon_oids.update(tids)
 
-        # make the directory if it doesn't exist and they option has been enabled
-        if not os.path.isdir(self.base_dir + "/" + dir):
-            if self.mkdir:
-                os.mkdir(self.base_dir + "/" + dir)
-            else:
-                raise FileNotFoundError("Data dir {} doesn't exist. Use option -mkdir to make dirs.".format(dir))
+        # check for new ones
+        new_tids = {}
+        for taxon_oid in taxon_oids:
+            if taxon_oid not in self.isolates:
+                isolate = Isolate(taxon_oid, name=taxon_oid)
+                isolate.make_organism(self.jgi_interface)
+                new_tids[taxon_oid] = isolate 
 
-        file_sizes = {}
-        report = DataReport()
-        for file in os.listdir(self.base_dir + "/" + dir):
-            # print(file)
-            file_sizes[file] = os.path.getsize(self.base_dir + "/" + dir + "/" + file)
-            # All data files should be structured "isolate.ext"
+        return new_tids
 
-            # get the extension
-            try:
-                isolate, ext = file.split(".", 1)
-            except ValueError:
-                if os.path.isdir(self.base_dir + "/" + dir + "/" + file):
-                    isolate = file
-                    ext = "/"
-                else:
-                    report.invalid_files.append(file)
-                    continue
+    def make_all_blast_db(self):
+        """ Concatenates all genomic fastas and makes a blast database out of that. """
 
-            # lookup the datatype from the extension
-            try:
-                dtype = self.EXT_TO_DTYPE[ext]
-            except KeyError:
-                print(("Nokey", file, ext))
-                report.invalid_files.append(file)
-                continue
 
-            # check if the data is of the right type for the directory
-            if dtype != dir:
-                print((dtype, "not", dir))
-                report.invalid_files.append(file)
-            else:
-                # check if the isolate was on the list or not
-                if isolate in self.isolates:
-                    # this is a small hack to not overreport BLAST
-                    # assuming that one found BLAST file means they are all there
-                    if isolate not in report.found_ids:
-                        report.found_ids.append(isolate)
-                else:
-                    report.extra_ids.append(isolate)
+        #
+        ## Concatenate genomic fastas and prepend name to each header
+        #
+        LOG.info("Concatenating all files...")
+        tmp_fasta_name = "all_isolates.fna"
+        with open(tmp_fasta_name, "w") as OUT:
+            for isolate in self.isolates.values():
+                if isolate.datatypes["genome"].present:
+                    # read the fasta file
+                    with open(isolate.get_data_paths("genome")[0], "r") as IN:
+                        LOG.debug("    Adding file from {}...".format(str(isolate)))
+                        for record in SeqIO.parse(IN, "fasta"):
+                            # change the header
+                            record.id = isolate.name + "_" + record.id
 
-        # document any missing ids
-        for isolate in self.isolates:
-            if isolate not in report.found_ids:
-                report.missing_ids.append(isolate)
+                            # set description to id to avoid double printing
+                            record.description = record.id
 
-        # check for duplicates by file size
-        # quick check for dups
-        # print(file_sizes)
-        if len(list(file_sizes.values())) > len(set(file_sizes.values())):
-            # longer check to determine which are possible duplicates
-            for k1, v1 in file_sizes.items():
-                for k2, v2 in file_sizes.items():
-                    if v1 == v2:
-                        # elim self
-                        if k1 != k2:
-                            # if converse already entered, skip
-                            if (k2, k1) not in report.duplicates:
-                                report.duplicates.append((k1, k2))
+                            SeqIO.write(record, OUT, "fasta")
 
-        return report
 
-    def _add_columns_to_database(self, df_of_new_data, overwrite=False):
-        """
-        Adds new columns to the database, will only overwrite null cells unless overwrite
-        flag is given in which case it will replace old data.
-        """
+        #
+        ## Make a mock isolate to access the mkblastdb method
+        #
+        all = Isolate(None, "all_isolates")
+        all.add_datatype("genome", (self.base_dir + "/", ".fna"))
 
-        if overwrite:
-            self.database.update(df_of_new_data, join="outer")
-        else:
-            self.database = self.database.combine_first(df_of_new_data)
+        all.add_datatype("blast_db", [tup for tup in self.dtype_and_ext if tup[0] == "blast_db"])
+        all.update_data("blast_db", overwrite=True)
 
-        # add any new columns to the order array
-        cols = self.database.columns
-        for col in cols:
-            if col not in self.column_order:
-                self.column_order.append(col)
+        # remove temporary fasta
+        os.remove(tmp_fasta_name)
+    
+    @staticmethod
+    def help():
+        """ Displays the help message. """
+ 
+        print("""
+Isolate Download Manager initialized as 'manager'.
+
+
+Other notable variables:
+    dtype_to_database -> dict mapping datatypes to field names for tabular output
+    metadata_to_database -> dict mapping metadata keys (on IMG organism summary) to field names
+    database_to_database -> dict mapping fields in a previous database to field names in this db
+    field_order -> list that contains the order of all the fields from the 3 dicts above
+    projects -> list of the projects the isolates are currently from
+
+You might want to:
+
+    - Add an isolate -> manager.add_isolate(taxon_oid)
+
+    - See missing files -> manager.get_missing()
+
+    - Connect to JGI -> manager.connect_to_JGI()
+
+    - Get missing data for all isolates -> manager.update_data()
+        - Get a specific data type -> manager.update_data("gbk")
+
+    - Get metadata for all isolates -> manager.update_metadata()
+
+    - Get a tabular representation of the isolates -> 
+            df = manager.build_database(dtype_to_database, database_to_database, metadata_to_database, field_order)
+
+    - Print the tabular representation -> write_database(df, filename)
+
+    - Check for new isolates in existing projects (doesn't add them to database) ->
+            manager.check_for_new_isolates(projects)
+
+
+    - Display this message again -> manager.help()
+""")
+
+
+def write_database(df, filename):
+    """ Writes a pandas DataFrame to the specified filename. """
+    df.to_csv(path_or_buf=filename, sep="\t", na_rep='NA', header=True, index=True, index_label="taxon_oid")
+
+
 
         
 class UserInterface(object):
@@ -1016,6 +938,7 @@ class UserInterface(object):
             self.manager.get_data()
 
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-db", "-database", help="a database mapping Taxon id to types of data on file. will be created if blank", default="")
@@ -1103,6 +1026,15 @@ if __name__ == "__main__":
             "Study Name (Proposal Name)": "project",
             "Gram Staining": "gram",
             }
+
+
+    # current projects
+    projects = {
+                'Burkholderia Environmental Isolates',
+                'Plant associated metagenomes--Microbial community diversity and host control of community assembly across model and emerging plant ecological genomics systems.',
+                'Rhizosphere Grand Challenge Isolate Sequencing'
+                }
+
 
 
     # load in any new isolates

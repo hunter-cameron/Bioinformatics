@@ -407,7 +407,7 @@ class JGIOrganism(object):
         if match:
             md_table = match.group(1)
         else:
-            raise PortalError("Could not find the metadata table. The HTML is probably different than expected.\n{}".format(str(self)))
+            raise PortalError("Could not find the metadata table. The HTML is different than expected (possibly because the lookup failed.\n{}".format(str(self)))
 
         parser = MetadataParser()
         return parser.get_metadata(md_table)
@@ -982,6 +982,73 @@ class JGIInterface(object):
             LOG.info("Login successful!")
             return session
 
+    def get_taxon_oids_for_proposal(self, proposal_name):
+        """ Returns a list of JGIOrganisms created from the IMG search results of a proposal name. """
+
+
+        """
+        On the IMG site, you must search in one action and then add extra fields in another. 
+        I would like to do this in one action.
+
+        However, the field addition also passes two keys with the same name. Perhaps I can pass an array?
+        Yes, I can pass array but then I must post as JSON.
+        I can also use a list of tuples for the params instead of dict and use data insead of json.
+        """
+        
+        payload = [ ('section', 'FindGenomes'), 
+                    ('page', 'findGenomeResults'),
+                    ('taxonSearchTerm', proposal_name),
+                    ('taxonSearchFilter', 'proposal_name'),
+                    ('find_organism', 'Go'),
+                    
+                    # These two commands are part of the second wave that I thought I might 
+                    # could just add to the first, didn't work. So, for now, I'll omit it
+                    #('genome_field_col', 't.taxon_oid'),
+                    #('genome_field_col', 't.jgi_project_id'),
+                    ]
+
+        request = self.session.post(IMG_LOOKUP, data=payload, headers=self.header)
+
+        # parse temporary id
+        pid_reg = "sid=(yui[^&]*)"
+        match = re.search(pid_reg, request.text)
+
+        try:
+            tmpid = match.group(1)
+        except:
+            raise JGIPortalError("Temporary id not found while looking up proposals for '{}'".format(proposal_name))
+
+        download_payload = {
+                    'section': 'Selection',
+                    'page': 'export',
+                    'tmpfile': tmpid,
+                    'table': 'taxontable',
+                    'sort': 'domain|asc',
+                    'rows': 'all',
+
+                    # original
+                    #'columns': '[{"key":"Select","label":"Select"},{"key":"Domain","label":"Domain"},{"key":"Status","label":"Status"},{"key":"StudyName","label":"Study Name"},{"key":"GenomeNameSampleName","label":"Genome Name / Sample Name"},{"key":"SequencingCenter","label":"Sequencing Center"},{"key":"IMGGenomeID","label":"IMG Genome ID "},{"key":"JGIProjectID","label":"JGI Project ID"},{"key":"GenomeSize","label":"Genome Size "},{"key":"GeneCount","label":"Gene Count "}]',
+
+                    # truncated to only taxon_oid -- this was done because most of the fields
+                    # in the column list above were blank (and all I NEED is taxon_oid)
+                    'columns': '[{"key":"Select","label":"Select"}]',
+                    'c': 'domain',
+                    'f': '',
+                    't': 'text',
+                    }
+        
+        request = self.session.post(IMG_DATA, data=download_payload, headers=self.header)
+
+        lines = request.text.split("\n")
+        
+        # make a list of taxon_oids skipping the header line and any blank lines
+        taxon_oids = []
+        for taxon_oid in lines[1:]:
+            taxon_oid = taxon_oid.strip()
+            if taxon_oid:
+                taxon_oids.append(taxon_oid)
+
+        return taxon_oids
 
 
     def _resolve_path_conflicts(self, files):
