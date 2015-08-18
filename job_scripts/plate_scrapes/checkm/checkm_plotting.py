@@ -164,10 +164,10 @@ if __name__ == "__main__":
     checkm_table = read_data_table(args.checkm)
 
     if args.trim_comp:
-        checkm_table = checkm_table.query('Completeness >= args.trim_comp')
+        checkm_table = checkm_table.query('Completeness >= {}'.format(args.trim_comp))
 
     if args.trim_cont:
-        checkm_table = checkm_table.query('Contamination <= args.trim_cont')
+        checkm_table = checkm_table.query('Contamination <= {}'.format(args.trim_cont))
 
     if args.sort:
         checkm_table.sort_index(by='Completeness', inplace=True)

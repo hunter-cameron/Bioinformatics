@@ -1,1 +1,0 @@
-../python/mypyli/download_from_JGI.py

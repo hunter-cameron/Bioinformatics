@@ -442,7 +442,7 @@ class JGIOrganism(object):
             try:
             # parse the download regex and then download JGI
                 files = self._get_jgi_files(datatype)
-            except (AttributeLookupError, ProtalError) as e:
+            except (AttributeLookupError, PortalError) as e:
                 self.download_reports["|".join(datatype)] = "failed"
             try:
                 prefix = self.prefix
@@ -500,7 +500,8 @@ class JGIOrganism(object):
     def _get_jgi_files(self, datatype):
         LOG.debug("Getting files from JGI that match the regex '{}'".format(str(datatype)))
         try:
-            taxon_oid = self.proj_id
+            pass
+            #taxon_oid = self.proj_id
         except AttributeLookupError:
             raise ValueError("proj_id attribute must be set to download JGI data")
 
@@ -520,7 +521,7 @@ class JGIOrganism(object):
                 try:
                     files += folder.search(file_reg)
                 except DataNotAvailable:
-                    raise DataNotAvailable("File matching '{}' was not found in folder '{}'".format(filre_reg, folder.get_full_path()))
+                    raise DataNotAvailable("File matching '{}' was not found in folder '{}'".format(file_reg, folder.get_full_path()))
 
         
 

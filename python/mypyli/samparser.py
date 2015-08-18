@@ -2,7 +2,7 @@
 import re
 import sys
 
-def parse(sam_fh, aligned_only=False, mapq=1):
+def parse(sam_fh, aligned_only=False, mapq=1, local=False):
     for line in sam_fh:
         if line.startswith("@"):
             continue
@@ -23,7 +23,7 @@ def parse(sam_fh, aligned_only=False, mapq=1):
         if aln_dict['mapq'] < mapq:
             continue
 
-        yield SamRecord(aln_dict)
+        yield SamRecord(aln_dict, local)
 
 def parse_headers(sam_fh):
     headers = {'seqs': {}}
@@ -47,9 +47,12 @@ class SamRecord(object):
     unnecessary computed, no computations performed twice)
     """
 
-    def __init__(self, attrib):
+    def __init__(self, attrib, local=False):
         for k, v in attrib.items():
             setattr(self, k, v)
+        
+        self.local = local
+
 
         if self.flag == 4:
             self.mapped = False
@@ -68,7 +71,10 @@ class SamRecord(object):
         if self._length is None:
             self._parse_cigar()
 
-        return self._length
+        if self.local:
+            return self._length - self.soft_clipped
+        else:
+            return self._length
     @length.setter
     def length(self, value):
         self._length = value
@@ -136,6 +142,7 @@ class SamRecord(object):
             else:
                 raise ValueError("Cigar string {} could not be parsed. It may be malformed.".format(self.cigar))
         else:
+            print((self.qname, self.mapped, self.cigar, self.mapq))
             raise NotImplementedError("Right now, this requires SAM format 1.4")
 
 

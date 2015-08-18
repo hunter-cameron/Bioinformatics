@@ -27,6 +27,7 @@ class TaxTree(object):
 
         self.email = email
         self.remote = remote
+
     # TREE UTILTY METHODS
     @classmethod
     def load_tree(cls, filename):
@@ -111,7 +112,8 @@ class TaxTree(object):
                             print("Warning! rank '{}' already assigned for {}".format(rank, taxstring), file=sys.stderr)
                             return None
                         else:
-                            taxonomy[rank] = match.group(2)
+                            if match.group(2):
+                                taxonomy[rank] = match.group(2)
 
             else:
                 print("Warning! Rank tags (k__, s__, etc) were not found for {}. Assigning taxonomy in order.".format(taxstring), file=sys.stderr)
@@ -176,7 +178,50 @@ class TaxTree(object):
                         except:
                             raise
                     else:
-                        raise Exception("Taxtring {} not found in Tree".format(taxstring))
+                        raise Exception("Taxstring {} not found in Tree".format(taxstring))
+
+    def lookup_taxstring_fast(self, taxstring):
+
+        try:
+            tax_dict = self._taxstring2dict(taxstring)
+        except:
+            raise 
+        print("here")
+    
+        # lookup the root node
+        node = self.lookup_taxid("131567") 
+
+        taxonomy = []
+        flag = False
+        for rank in TaxTree.taxRanks:
+            try:
+                tax = tax_dict[rank]
+                if flag:
+                    raise Exception("Malformed taxstring {}. Blank fields were followed by more data.".format(taxstring))
+                else:
+                    taxonomy.append((rank, tax.replace("_", " ")))
+            except KeyError:
+                flag = True
+                
+
+        print(("taxonomy", taxonomy))
+        while taxonomy:
+            rank, taxname = taxonomy[0]
+
+            print(("Looking for", rank, taxname))
+            for child in node.children:
+                if child.name == taxname and child.rank == rank:
+                    if len(taxonomy) == 1:
+                        return child
+                    else:
+                        node = child
+                        taxonomy = taxonomy[1:]
+                        break
+            else:
+                raise Exception("Taxstring {} not found in Tree".format(taxstring))
+
+
+ 
 
     def _remote_lookup(self, taxonomy):
         """ Tries to look up a taxonomy on NCBI's servers. """

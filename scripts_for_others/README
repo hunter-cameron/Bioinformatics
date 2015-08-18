@@ -9,7 +9,7 @@ attention.
 
 Current Scripts in this Directory:
 
-download_from_JGI.py        Script to log in and download files from the JGI
+jgi_interface.py            Script to log in and download files from the JGI
                             or IMG websites. For documentation, run using the
                             '-h' option.
 
@@ -23,3 +23,16 @@ mypyli                      MY PYthon LIbrary. Custom library of python
                             Within taxtree.py, converting taxids to taxonomy
                             strings is fairly well tested (though not error
                             proof) but other functions aren't as well tested.
+
+prune_phylo_tree.py         Script to prune a phylogenetic tree based on a list
+                            of node names or a regular expression. Also supports
+                            changing node names. Run using '-h' for complete docs. 
+
+run_checkm.py               Runs the genome assembly checking program "CheckM".
+                            This program is intended to run CheckM at a specific 
+                            taxonomic level and also easily support adding new
+                            genomes to CheckM analyses without rerunning the whole
+                            set. 
+             
+                            ** CheckM has been updated since this script was written,
+                               this script may no longer work properly.

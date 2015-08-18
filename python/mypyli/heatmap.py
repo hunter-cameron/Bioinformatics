@@ -1,98 +1,173 @@
 
-import numpy as np
-import matplotlib.pyplot as plt
+"""
+This code was adapted from the following recipe:
+    * http://altanalyze.blogspot.se/2012/06/hierarchical-clustering-heatmaps-in.html
+    * http://code.activestate.com/recipes/578175/
 
-def histogram(data, bins):
-    """ 
-    Returns a matplotlib ax object or a histogram, specializes in 
-    making histograms with uneven bins
-    """
-    
-    print(data[0:99])
+Which was in turn inspired by many other posts:
+   * http://stackoverflow.com/questions/7664826
+   * http://stackoverflow.com/questions/2982929
+   * http://stackoverflow.com/questions/2455761
 
-    hist, h_bins = np.histogram(data[0:99], bins=bins)
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
+Running this with cosine or other distance metrics can often produce negative Z scores during clustering, so adjustments to the clustering may be required. Information about distance measures can be found here:
+   * http://docs.scipy.org/doc/scipy/reference/cluster.hierarchy.html
+   * http://docs.scipy.org/doc/scipy/reference/generated/scipy.spatial.distance.cdist.html
 
-    print(hist)
-    print(h_bins)
+The documentation about the custom color gradients can be found here:
+   * http://matplotlib.sourceforge.net/examples/pylab_examples/custom_cmap.html
+"""
 
-    ax.bar(range(len(hist)), height=hist, align='edge', width=1)
-    ax.set_xlim([0, len(hist)])       # x vals with a 1 pad on each side
-    ax.set_xticks(range(len(h_bins)))
-    #ax.set_xticks([0] + [str(bin) for bin in bins])
-    ax.set_xticklabels([0] + [str(bin) for bin in bins])
-    
-    return ax
+# Built-in modules #
+import random
 
-
-def stacked_bar_plot(data, stack_cols, colors=["blue", "green", "red", "cyan", "magenta", "yellow", "black", "white"], log=False):
-    """ 
-    Returns an ax with a stacked bar plot using columns in stack cols
-    (in the order they appear in stack cols - should be tallest first)
-    """
-    x_vals = range(data.shape[0])
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
-
-    for indx, col in enumerate(stack_cols):
-        if log:
-            ax.bar(x_vals, data[col], color=colors[indx], align='center', label=col, log=True)
-        else:
-            ax.bar(x_vals, data[col], color=colors[indx], align='center', label=col)
-
-    names = data.index.values
-
-    plt.xlim(x_vals[0] - 1, x_vals[-1] + 1)
-    plt.xticks(x_vals, names, rotation="vertical", ha='center', fontsize='x-small')
-
-    return ax
-
-
-
-
-from matplotlib import pyplot
+# Third party modules #
+import numpy, scipy, matplotlib, pandas
+from matplotlib import pyplot as plt
 import scipy.cluster.hierarchy as sch
 import scipy.spatial.distance as dist
-import names
+import numpy as np
 
 ###############################################################################
-    # Create Custom Color Gradients #
-    red_black_sky     = {'red':   ((0.0, 0.0, 0.0), (0.5, 0.0, 0.1), (1.0, 1.0, 1.0)),
-                         'green': ((0.0, 0.0, 0.9), (0.5, 0.1, 0.0), (1.0, 0.0, 0.0)),
-                         'blue':  ((0.0, 0.0, 1.0), (0.5, 0.1, 0.0), (1.0, 0.0, 0.0))}
-    red_black_blue    = {'red':   ((0.0, 0.0, 0.0), (0.5, 0.0, 0.1), (1.0, 1.0, 1.0)),
-                         'green': ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
-                         'blue':  ((0.0, 0.0, 1.0), (0.5, 0.1, 0.0), (1.0, 0.0, 0.0))}
-    red_black_green   = {'red':   ((0.0, 0.0, 0.0), (0.5, 0.0, 0.1), (1.0, 1.0, 1.0)),
-                         'blue':  ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
-                         'green': ((0.0, 0.0, 1.0), (0.5, 0.1, 0.0), (1.0, 0.0, 0.0))}
-    yellow_black_blue = {'red':   ((0.0, 0.0, 0.0), (0.5, 0.0, 0.1), (1.0, 1.0, 1.0)),
-                         'green': ((0.0, 0.0, 0.8), (0.5, 0.1, 0.0), (1.0, 1.0, 1.0)),
-                         'blue':  ((0.0, 0.0, 1.0), (0.5, 0.1, 0.0), (1.0, 0.0, 0.0))}
+# Create Custom Color Gradients #
+red_black_sky     = {'red':   ((0.0, 0.0, 0.0), (0.5, 0.0, 0.1), (1.0, 1.0, 1.0)),
+                     'green': ((0.0, 0.0, 0.9), (0.5, 0.1, 0.0), (1.0, 0.0, 0.0)),
+                     'blue':  ((0.0, 0.0, 1.0), (0.5, 0.1, 0.0), (1.0, 0.0, 0.0))}
+red_black_blue    = {'red':   ((0.0, 0.0, 0.0), (0.5, 0.0, 0.1), (1.0, 1.0, 1.0)),
+                     'green': ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
+                     'blue':  ((0.0, 0.0, 1.0), (0.5, 0.1, 0.0), (1.0, 0.0, 0.0))}
+red_black_green   = {'red':   ((0.0, 0.0, 0.0), (0.5, 0.0, 0.1), (1.0, 1.0, 1.0)),
+                     'blue':  ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0)),
+                     'green': ((0.0, 0.0, 1.0), (0.5, 0.1, 0.0), (1.0, 0.0, 0.0))}
+yellow_black_blue = {'red':   ((0.0, 0.0, 0.0), (0.5, 0.0, 0.1), (1.0, 1.0, 1.0)),
+                     'green': ((0.0, 0.0, 0.8), (0.5, 0.1, 0.0), (1.0, 1.0, 1.0)),
+                     'blue':  ((0.0, 0.0, 1.0), (0.5, 0.1, 0.0), (1.0, 0.0, 0.0))}
 
-    make_cmap = lambda x: matplotlib.colors.LinearSegmentedColormap('my_colormap', x, 256)
-    color_gradients = {'red_black_sky'      : make_cmap(red_black_sky),
-                       'red_black_blue'     : make_cmap(red_black_blue),
-                       'red_black_green'    : make_cmap(red_black_green),
-                       'yellow_black_blue'  : make_cmap(yellow_black_blue),
-                       'red_white_blue'     : pyplot.cm.bwr,
-                       'seismic'            : pyplot.cm.seismic,
-                       'green_white_purple' : pyplot.cm.PiYG_r,
-                       'coolwarm'           : pyplot.cm.coolwarm,}
+make_cmap = lambda x: matplotlib.colors.LinearSegmentedColormap('my_colormap', x, 256)
+color_gradients = {'red_black_sky'      : make_cmap(red_black_sky),
+                   'red_black_blue'     : make_cmap(red_black_blue),
+                   'red_black_green'    : make_cmap(red_black_green),
+                   'yellow_black_blue'  : make_cmap(yellow_black_blue),
+                   'red_white_blue'     : plt.cm.bwr,
+                   'seismic'            : plt.cm.seismic,
+                   'green_white_purple' : plt.cm.PiYG_r,
+                   'coolwarm'           : plt.cm.coolwarm,}
 
 ###############################################################################
-class HiearchicalHeatmap(object):
-    """Class adopted from http://code.activestate.com/recipes/578834-hierarchical-clustering-heatmap-python/"""
 
-    row_method     = 'single'
-    column_method  = 'single'
-    row_metric     = 'braycurtis'
-    column_metric  = 'braycurtis'
-    gradient_span  = 'only_max'
-    color_gradient = 'yellow_black_blue'
+class Heatmap(object):
+    """ General heatmap class """
+
+    ORDER_OPTIONS = ["cluster", "sort"]
+
+    cluster_rows = False
+    cluster_cols = False
+    cluster_method = 'braycurtis'
+
+    fig_width = 11
+    fig_height = 8.5
+
+    cmap = plt.cm.OrRd
+
+
+
+
+    def __init__(self, data):
+        self.data = data
+        
+        self.row_order = "sort"
+        self.col_order = "sort"
+        
+        # store all the potential axes
+        self.ax_hmp = None      # heatmap
+        self.ax_leg = None      # color bar legend
+
+        # this stores the mappable to be used for making the legend
+        self.leg_mappable = None
+
+        # store the figure for all methods to access
+        self.fig = plt.figure(figsize=(self.fig_width, self.fig_height))
+        
+
+    def plot_heatmap(self, rect):
+        """ 
+        Adds a heatmap to the figure at the position specified by the quadruple rect = (x, y, w, h)
+
+        Sets the ax_heatmap attribute to the resulting axes. Only one can be active at a time. Deletes
+        an existing one if present. 
+        """
     
-    fig_width = 12
+
+        # reorder rows and columns alphabetically
+        self.data.sort_index(ascending=True, inplace=True)
+        self.data = self.data[sorted(self.data.columns)]
+        
+       
+        ax_hmp = self.fig.add_axes(rect)
+        self.leg_mappable = ax_hmp.matshow(self.data, aspect='auto', origin='lower', cmap=self.cmap)
+        ax_hmp.set_xticks([])
+        ax_hmp.set_yticks([])
+
+
+        # Add row and column labels as text
+        row_names = self.data.index
+        col_names = self.data.columns
+ 
+        # add the row labels
+        for pos, label in enumerate(row_names):
+            # x position is a half unit back from the far right edge, ypos is the index
+            ax_hmp.text(self.data.shape[1]-0.5, pos, '  ' + label, verticalalignment="center")
+
+        # add the column labels
+        for pos, label in enumerate(col_names):
+            # this time, x pos is the index and y pos is at the bottom
+            ax_hmp.text(pos, -0.9, ' ' + label, rotation=90, verticalalignment="top", horizontalalignment="center")
+
+        self.ax_hmp = ax_hmp
+
+
+
+    def plot_legend(self, rect):
+        """ 
+        Adds a legend to the figure at the position specified by the quadruple rect = (x, y, w, h)
+
+        Sets the ax_leg attribute to the resulting axes. Only one can be active at a time. Deletes
+        an existing one if present. 
+        """
+        
+        ax_leg = self.fig.add_axes(rect, frame_on=False)
+        cb = plt.colorbar(mappable=self.leg_mappable, cax=ax_leg, orientation='horizontal')
+        ax_leg.set_title("colorkey")
+
+        # force the ticks to be in good positions
+        loc = [0, .5, 1]
+        cb.set_ticks(loc)
+        cb.set_ticklabels([str(l) for l in loc])
+        
+        #tick_locator = matplotlib.ticker.MaxNLocator(nbins=3)
+        #cb.locator = tick_locator
+        #cb.ax.xaxis.set_major_locator(matplotlib.ticker.AutoLocator())  
+        #cb.update_ticks()
+        self.fig.savefig("figure.png")
+
+
+
+    def test(self):
+        return
+        plt.matshow(self.data, aspect='auto')
+        plt.colorbar(orientation='horizontal')
+        fig = plt.gcf()
+        sys.exit()
+
+class HiearchicalHeatmap(object):
+    """A common use case for biologists analyzing their gene expression data is to cluster and visualize patterns of expression in the form of a heatmap and associated dendrogram."""
+
+    row_method     = 'single'     # Can be: linkage, single, complete, average, weighted, centroid, median, ward
+    column_method  = 'single'     # Can be: linkage, single, complete, average, weighted, centroid, median, ward
+    row_metric     = 'braycurtis' # Can be: see scipy documentation
+    column_metric  = 'braycurtis' # Can be: see scipy documentation
+    gradient_span  = 'only_max'   # Can be: min_to_max, min_to_max_centered, only_max, only_min
+    color_gradient = 'yellow_black_blue'   # Can be: see color_gradients dictionary
+    fig_weight = 12
     fig_height = 8.5
 
     def plot(self):
@@ -114,7 +189,7 @@ class HiearchicalHeatmap(object):
         norm = matplotlib.colors.Normalize(value_min, value_max)
 
         # Scale the figure window size #
-        fig = pyplot.figure(figsize=(self.fig_width, self.fig_height))
+        fig = pyplot.figure(figsize=(self.fig_weight, self.fig_height))
 
         # Calculate positions for all elements #
         # ax1, placement of dendrogram 1, on the left of the heatmap
@@ -247,21 +322,23 @@ class TestHeatmap(HiearchicalHeatmap):
 
     def data(self, size=20):
         """Create some fake data in a dataframe"""
+        letters = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n",
+                "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z"]
         numpy.random.seed(0)
         random.seed(0)
         x = scipy.rand(size)
         M = scipy.zeros([size,size])
         for i in range(size):
             for j in range(size): M[i,j] = abs(x[i] - x[j])
-        df = pandas.DataFrame(M, index=[names.get_last_name() for _ in range(size)],
-                                 columns=[names.get_first_name() for _ in range(size)])
-        df['Mary']['Day'] = 1.5
-        df['Issac']['Day'] = 1.0
+        df = pandas.DataFrame(M, index=[letters[i] for i in range(size)],
+                                 columns=[letters[i].upper() for i in range(size)])
+        #df['Mary']['Day'] = 1.5
+        #df['Issac']['Day'] = 1.0
         return df
 
     def plot(self):
         self.frame = self.data()
-        self.path = '/tmp/' + self.short_name + '.png'
+        self.path = self.short_name + '.png'
         fig, axm, axcb, cb = HiearchicalHeatmap.plot(self)
         cb.set_label("Random value")
         pyplot.savefig(self.path)
@@ -272,3 +349,5 @@ def test():
     graph.plot()
     return graph
 
+if __name__ == "__main__":
+    test()

@@ -18,6 +18,7 @@ open(my $OUT, ">", "output.txt");
 #create bioperl writer SeqIO
 my $seqio_object = Bio::SeqIO->new(-file => $ARGV[0]);
 my @parse_data = ();
+
 #read through each sequence
 while(my $seq_object = $seqio_object->next_seq) {
     

@@ -45,14 +45,20 @@ def parse(blast_f):
 
             yield blast_record
 
-def count_tax_ids(blast_f):
+def count_tax_ids(blast_f, method="length"):
     taxid_counts = {}
     for record in parse(blast_f):
         # this is getting the largest tid (which seems to be the more
         # specific one, usually)
         tid = record['staxids'].split(";")[-1]
         
-        taxid_counts[tid] = taxid_counts.get(tid, 0) + 1
+        if method == "length":
+            aln_length = int(record['length'])
+            taxid_counts[tid] = taxid_counts.get(tid, 0) + aln_length
+        elif method == "count":
+            taxid_counts[tid] = taxid_counts.get(tid, 0) + 1
+        else:
+           raise ValueError("Method is invalid.")
 
     return taxid_counts
 
@@ -69,7 +75,8 @@ def assign_tax_ids(tree, iterable):
     return assignments
         
 def get_best_taxonomy(taxstring_counts, class_perc=.50):
-    
+ 
+
     # build tree of counts   
     tree_counts = {'count': 0, 'children': {}}
     for taxstring, count in taxstring_counts.items():
@@ -101,6 +108,84 @@ def get_best_taxonomy(taxstring_counts, class_perc=.50):
             return "; ".join(taxonomy)
 
     return "; ".join(taxonomy)
+
+
+def make_tree(taxonomies):
+    """ Makes a simple text tree of the taxonomies. """
+
+    class SimpleTree(object):
+        """ Simple inline tree class """
+
+        def __init__(self, name, is_terminal=False):
+            self.name = name
+            self.is_terminal = is_terminal
+            
+            if self.is_terminal:
+                self.count = 1
+            else:
+                self.count = 0
+    
+            self.children = {}
+
+        def add_child(self, name):
+            if name in self.children:
+                return self.children[name]
+            else:
+                self.children[name] = SimpleTree(name)
+                return self.children[name]
+
+        def print_tree(self, fh=sys.stdout, level=0):
+            """ Recursively print the tree collapsing non-terminal nodes. """
+            if self.is_terminal:
+                print("   "*level + self.name + "\t" + str(self.count), file=fh)
+
+            else:
+                print("   "*level + self.name, file=fh)
+
+            for name in sorted(self.children):
+                child = self.children[name]
+                child.print_tree(fh, level+1)
+
+
+        def print_collapsed_tree(self, fh=sys.stdout, level=0, collapsed=[]):
+            """ Recursively print the tree collapsing non-terminal nodes. """
+           
+            next_collapsed = collapsed.copy()
+        
+            # we always want to print terminal nodes
+            if self.is_terminal:
+                col_text = "; ".join(collapsed + [self.name])
+                print("   "*level + col_text + "\t" + str(self.count), file=fh)
+
+            else:
+                # for non terminal nodes, we only want to print nodes with > 1 child
+                if len(self.children) > 1:
+                    col_text = "; ".join(collapsed + [self.name])
+                    print("   "*level + col_text, file=fh)
+
+                else:
+                    next_collapsed.append(self.name)
+
+            for name in sorted(self.children):
+                child = self.children[name]
+                child.print_collapsed_tree(fh, level+1, next_collapsed)
+
+    root = SimpleTree("root")
+
+    current_tax = root
+    for taxonomy in taxonomies:
+        levels = taxonomy.split("; ")
+
+        for level in taxonomy.split("; "):
+            current_tax = current_tax.add_child(level)
+            
+        current_tax.is_terminal = True
+        current_tax.count += 1
+
+        current_tax = root
+
+    root.print_tree(level=-1)
+
 def main(blast_f, tree, checkm_f=None):
     classifications = {}
     for file in blast_f:
@@ -108,12 +193,18 @@ def main(blast_f, tree, checkm_f=None):
         taxid_counts = count_tax_ids(file)
     
         taxid_assign = assign_tax_ids(tree, taxid_counts)
-    
+
         taxstr_counts = {taxid_assign[taxid].get_tax_string(): taxid_counts[taxid] for taxid in taxid_assign}
 
-        taxonomy = get_best_taxonomy(taxstr_counts, class_perc=.90)
+        taxonomy = get_best_taxonomy(taxstr_counts, class_perc=.80)
 
+        # get the taxid of the assignment
+        #node = tree.lookup_taxstring(taxonomy)
+        #print(node.taxid)
+        
         classifications[basename(file)] = taxonomy
+
+    make_tree(classifications.values())
 
     for genome, tax in classifications.items():
         print("{}\t{}".format(genome, tax))
