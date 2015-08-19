@@ -47,7 +47,7 @@ LOOKUP = 'http://genome.jgi.doe.gov/lookup?'
 # This is the url for IMG-ER which might be what I should use because it is the more complete resource according to some folks at JGI.
 IMG_LOOKUP = 'https://img.jgi.doe.gov/cgi-bin/mer/main.cgi'
 #IMG_LOOKUP = 'https://img.jgi.doe.gov/cgi-bin/er/main.cgi'
-IMG_DATA = 'https://img.jgi.doe.gov/cgi-bin/er/xml.cgi'
+IMG_DATA = 'https://img.jgi.doe.gov/cgi-bin/mer/xml.cgi'
 
 
 # custom exceptions
