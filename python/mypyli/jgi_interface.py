@@ -295,14 +295,15 @@ class JGIOrganism(object):
     """
 
 
-    IMG_DATA = ['gbk', 'ko', 'cog', 'pfam', 'tigrfam', 'interpro']
+    IMG_DATA = ['gbk', 'ko', 'cog', 'pfam', 'tigrfam', 'interpro', 'prot']
     IMG_DATA_SUF = {
             "gbk": "gbk",
             "ko": "ko.txt",
             "cog": "cog.txt", 
             "pfam": "pfam.txt",
             "tigrfam": "tigrfam.txt",
-            "interpro": "interpro.txt"
+            "interpro": "interpro.txt",
+            "prot": "prot.txt"
             }
 
 
@@ -445,6 +446,9 @@ class JGIOrganism(object):
                 files = self._get_jgi_files(datatype)
             except (AttributeLookupError, PortalError) as e:
                 self.download_reports["|".join(datatype)] = "failed"
+                return
+
+
             try:
                 prefix = self.prefix
             except:
@@ -479,7 +483,8 @@ class JGIOrganism(object):
         try:
             tree = self.jgi_data_tree
         except AttributeLookupError:
-            raise ValueError("jgi_data_tree attribute must be set to print JGI files")
+            LOG.warning("jgi_data_tree attribute must be set to print JGI files")
+            return
 
         LOG.info("Printing available JGI files for '{}'".format(str(self)))
         print("JGI files")
@@ -490,7 +495,8 @@ class JGIOrganism(object):
         try:
             taxon_oid = self.taxon_oid
         except AttributeLookupError:
-            raise ValueError("taxon_oid attrivute must be set to see available IMG files")
+            LOG.warning("taxon_oid attribute must be set to see available IMG files")
+            return
 
         LOG.info("Printing available IMG files for '{}'".format(str(self)))
         print("IMG files")
@@ -554,7 +560,7 @@ class JGIOrganism(object):
 
             pid_reg = "id='pid' name='pid' value=\'(\d+)\'"
 
-        elif datatype in ['ko', 'cog', 'pfam', 'tigrfam', 'interpro']:
+        elif datatype in ['ko', 'cog', 'pfam', 'tigrfam', 'interpro', 'prot']:
             payload = {     'section': 'TaxonDetail',
                             'taxon_oid': taxon_oid,
                         }
@@ -564,13 +570,18 @@ class JGIOrganism(object):
                     'cog': 'cogs',
                     'pfam': 'pfam',
                     'tigrfam': 'tigrfam',
-                    'interpro': 'ipr'
+                    'interpro': 'ipr',
+                    'prot': 'proteinCodingGenes'
                     }
 
             payload['page'] = page_dict[datatype]
         
             pid_reg = "sid=(yui[^&]*)"
        
+
+        # It looks like JGI now has a new portal section for metagenomes... these need to be uncommented for metagenome data (if you end up with blank files, try uncommenting this.
+        payload['section'] = "MetaDetail"
+        payload['data_type'] = "Assembled"
 
         # request the data be generated
         request = self.interface.session.post(IMG_LOOKUP, data=payload, headers=self.interface.header)
@@ -604,7 +615,7 @@ class JGIOrganism(object):
     def _get_img_download_payload(datatype, tmpfile):
         """ Looks up the payloads for various IMG data types. """
        
-        if datatype in ["ko", "cog", "pfam", "tigrfam", "interpro"]:
+        if datatype in ["ko", "cog", "pfam", "tigrfam", "interpro", "prot"]:
             payload = { 
 
                         'section': 'Selection',
@@ -667,6 +678,14 @@ class JGIOrganism(object):
                         'columns': '[{"key":"Select","label":"Select"},{"key":"InterProID","label":"InterPro ID"},{"key":"InterProName","label":"InterPro Name"},{"key":"GeneCount","label":"Gene Count"}]',
                         'c': 'InterProID',
                     },
+
+                "prot": {
+                        'table': 'geneProdList',
+                        'sort': 'GeneID|asc',
+                        'rows': 'all',
+                        'columns': '[{"key":"Select","label":"Select"},{"key":"GeneID","label":"Gene ID"},{"key":"LotusTag","label":"Lotus Tag"},{"key":"GeneProductName","label":"Gene Product Name"},{"key":"StartCoord","label":"Start Coord"},{"key":"EndCoord","label":"End Coord"},{"key":"Strand","label":"Strand"},{"key":"Scaffold","label":"Scaffold"}]',
+                        'c': 'GeneID'
+                        }
             }
         
 
@@ -718,22 +737,6 @@ class JGIOrganism(object):
         name_html = self.interface.session.get(LOOKUP, params=my_params)    # use the parent session to maintain cookies
         #print((self.id, name_html.url))
        
-
-        # look up the taxon_oid if id isn't already known
-        # need some way to handle this if errors happen
-        # don't want to 
-        if not self.taxon_oid:
-            # there are two potential places to get the taxon_oid
-            taxon_oid_match = re.search('href="https://img.jgi.doe.gov/genome.php\?id=(\d+)"', name_html.text)
-            if taxon_oid_match:
-                self.taxon_oid = taxon_oid_match.group(1)
-            else:
-                taxon_oid_match = re.search('taxon_oid=(\d+)"', name_html.text)
-
-                if taxon_oid_match:
-                    self.taxon_oid = taxon_oid_match.group(1)
-
-
         # parse the name from the organism info page
         # search for href="/(NAME)/ANYTHING.info.html
         match = re.search('href="/(.*)/.*\.info\.html', name_html.text)
@@ -847,6 +850,7 @@ class JGIOrganism(object):
 
             except AttributeLookupError as e:
                 self.organism_name = e
+                LOG.warning("organism_name lookup failed: {}".format(e))
                 raise
             
         return self._organism_name
@@ -912,7 +916,8 @@ class JGIInterface(object):
         self.newest_only = False
 
         # header to display to the website
-        self.header = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:24.0) Gecko/20140924 Firefox/24.0 Iceweasel/24.8.1'}
+        #self.header = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:24.0) Gecko/20140924 Firefox/24.0 Iceweasel/24.8.1'}
+        self.header = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/45.0.2454.85 Safari/537.36'}
 
         # handle kwargs
         valid_kwargs = [
@@ -1053,6 +1058,40 @@ class JGIInterface(object):
 
         return taxon_oids
 
+    def set_preferences(self, **kwargs):
+        """ Sets preferences; the most common will probably be the number of genes to get on a search """
+
+        LOG.info("Setting preferences...")
+
+        # set the defaults
+        payload = {
+                "maxParalogGroups": "500",
+                "maxGeneListResults": "1000",
+                "maxHomologResults": "200",
+                "maxNeighborhoods": "5",
+                "minHomologPercentIdentity": "30",
+                "hideViruses": "Yes",
+                "hidePlasmids": "Yes",
+                "hideGFragment": "Yes",
+                "hideZeroStats": "Yes",
+                "userCacheEnable": "Yes",
+                "genomeListColPrefs": "No",
+                "message": "Preferences saved.",
+                "menuSelection": "Preferences",
+                "_section_MyIMG_setPreferences": "Save Preferences",
+                "section": "MyIMG"
+                }
+
+        # update the preferences
+        for arg in kwargs:
+            if arg in payload:
+                print("Yes")
+                payload[arg] = kwargs[arg]
+            else:
+                raise ValueError("kwarg {} is not a valid preference.".format(arg))
+
+        request = self.session.post(IMG_LOOKUP, data=payload, headers=self.header)
+        print(request.text)
 
     def _resolve_path_conflicts(self, files):
         """ 
@@ -1286,11 +1325,6 @@ def main2(args):
             print("\n\nThere were errors in fetching the available files for the following ids:")
             [print("    " + entry.id) for entry in failed_ids]
 
-    """
-    Sets up the Interface and makes an Organism for each id and returns a list of Organisms.
-    """
-   
-    # set up the interface
 
 def init_organisms(interface, ids, id_type, names = None):
     """ Returns a list of organisms for a list of ids and optional names. """
@@ -1318,7 +1352,7 @@ def download_data_for_all_organisms(organisms, datatype):
     for organism in organisms:
         try:
             organism.download_data(datatype)
-        except (AttributeLookupError, PortalError) as e:
+        except (AttributeLookupError, PortalError, DataNotAvailable) as e:
             LOG.error("Organism {} failed datatype '{}'\n".format(str(organism), datatype) + e.args[0])
             continue
 
@@ -1347,12 +1381,16 @@ def standard_pipeline(args):
         # check for args.get
         if args.get:
             for datatype in args.get:
+                if datatype in JGIOrganism.IMG_DATA:
+                    interface.set_preferences(maxGeneListResults="200000")
+
                 download_data_for_all_organisms(organisms, datatype)
 
         # if not args.get we want to list available files
         else:
             for organism in organisms:
                 organism.print_available_files(portal="both")
+                return
 
         print("PRINTING DOWNLOAD REPORT")
         for organism in organisms:

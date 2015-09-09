@@ -937,7 +937,13 @@ class UserInterface(object):
         elif style == "local":
             self.manager.get_data()
 
+def get_ids_from_file(ids_f):
+    ids = []
+    with open(ids_f, 'r') as IN:
+        for line in IN:
+            ids.append(line.rstrip())
 
+    return ids
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

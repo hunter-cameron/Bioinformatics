@@ -1,10 +1,11 @@
 
 import argparse
 
-from mypyli import utilities
+from mypyli import utilities, picrust
 
+"""
 def parse_predicted_trait_table(old_trait_table, new_trait_table):
-    """ Returns a dict of genomes and a dict of trait_descriptions """
+    "" Returns a dict of genomes and a dict of trait_descriptions ""
     
     genome_dict = {}
     trait_names = []
@@ -19,6 +20,9 @@ def parse_predicted_trait_table(old_trait_table, new_trait_table):
                 # check for the header line
                 if fields[-1] == "metadata_NSTI":
                     trait_names = fields[1:-1]
+
+                    # remove the comment from the first field
+                    fields[0] = fields[0][1:]
                     OUT.write("\t".join(fields[:-1]) + "\n")
                 continue
 
@@ -43,6 +47,47 @@ def parse_predicted_trait_table(old_trait_table, new_trait_table):
 
 
     return genome_dict, trait_dict
+"""
+
+def parse_predicted_trait_table(old_trait_table, new_trait_table):
+    """ Returns a dict of genomes and a dict of trait_descriptions """
+    
+    genome_dict = {}
+    trait_names = []
+    trait_metadata = {}
+
+    ttm = picrust.TraitTableManager(old_trait_table)
+
+    # get an ordered list of traits excluding any metadata fields
+    ordered_traits = ttm.get_ordered_traits()
+    ordered_traits = [trait for trait in ordered_traits if not trait.startswith("metadata")]
+
+    with open(new_trait_table, 'w') as OUT:
+        # write header line
+        OUT.write("\t".join(["OTU_IDs"] + ordered_traits) + "\n")
+
+        # process each entry in the precalculated trait table
+        for entry in ttm:
+
+            # check for the metadata fields and extract them separately
+            if entry.name.startswith("metadata"):
+                trait_metadata[entry.name] = entry.traits
+            else:
+                if float(entry.traits["metadata_NSTI"]) == 0:
+                    # set entry in genome dict for later use
+                    genome_dict[entry.name] = None
+
+                    # write the entry to the new trait table
+                    picrust.TraitTableManager.write_entry(entry, OUT, ordered_traits)
+
+    # build a dict of trait metadata
+    trait_dict = {}
+    for index, name in enumerate(trait_names):
+        trait_dict[name] = {field: trait_metadata[field][index] for field in trait_metadata}
+
+
+    return genome_dict, trait_dict
+
 
 def map_genomes_to_copynumbers(copy_number_f, genomes):
     """ Looks up copynumbers for genomes using a supplied copy_number_f """
@@ -55,7 +100,7 @@ def map_genomes_to_copynumbers(copy_number_f, genomes):
 
 def write_copynumber_file(genomes, out):
     with open(out, 'w') as OUT:
-        OUT.write("#OTU_IDS\t16S_rRNA_Count\n")
+        OUT.write("OTU_IDS\t16S_rRNA_Count\n")
         for genome, copynumber in genomes.items():
             OUT.write("{}\t{}\n".format(genome, copynumber))
 
@@ -65,7 +110,7 @@ def write_trait_metadata(traits, out):
         OUT.write("\t".join(["Trait"] + headers) + "\n")
         for trait in traits:
             to_write = []
-            for name in sorted(traits[trait]):
+            for name in headers:
                 to_write.append(traits[trait][name])
 
             OUT.write("\t".join([trait] + to_write) + "\n")
