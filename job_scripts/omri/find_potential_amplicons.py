@@ -104,7 +104,6 @@ class PotentialAmplicon(object):
         min_distance = 99999
 
         # get only the portion of the seq corresponding to this amplicon
-        # add 1 to the end because half openness
         seqs = self.parent.get_region(self.start, self.end)
 
         # calculate the distance using lower triangular algorithm
@@ -119,7 +118,6 @@ class PotentialAmplicon(object):
                 # lower triangular algorithm
                 if seq1 == seq2:
                     break
-
 
                 # calculate the distance between the two seqs and set min_dist if necessary
                 distance = 0
@@ -138,6 +136,48 @@ class PotentialAmplicon(object):
 
         return min_distance
 
+    def get_indistinguishable(self):
+        """ 
+        Returns a list of lists of seqs that are indistinguishable at this amplicon. 
+        
+        Each list within a list are genomes that have the same seq.
+        """
+
+        # get only the portion of the seq corresponding to this amplicon
+        seqs = self.parent.get_region(self.start, self.end)
+
+        no_dist = []
+        # calculate the distance using lower triangular algorithm
+        for seq1 in seqs:
+            for seq2 in seqs:
+
+                # lower triangular algorithm
+                if seq1 == seq2:
+                    break
+
+                # calculate the distance between the two seqs
+                distance = 0
+                for nt1, nt2 in zip(seq1, seq2):
+                    if nt1 != nt2:
+                        distance += 1
+
+                # add the seqs to a group if dist = 0 
+                if distance == 0:
+                    for group in no_dist:
+                        if g1.id in group:
+                            if g2.id not in group:
+                                group.append(g2.id)
+                            break
+                        elif g2.id in group:
+                            if g1.id not in group:
+                                group.append(g1.id)
+                            break
+                    
+                    # if didn't break out, must need to make a new group
+                    else:
+                        no_dist.append([g1, g2])
+
+        return no_dist
 
     def print_mask(self, fh=sys.stdout):
         """ Prints a "mask" of the amplicon where the bounding left and right regions are the only NT printed and the variable region is represented by Ns """
@@ -154,6 +194,25 @@ class PotentialAmplicon(object):
 
         fh.write(header + "\n" + mask + "\n")
         
+    def print_bad_amp_summary(self, fh=sys.stdout):
+        """ Prints a line detailing which genomes were not unique for the amplicon """
+        
+        name = "PotentialAmplicon {} {}..{} score: {}".format(self.parent.name, self.bounding_left.start, self.bounding_right.end, self.score)
+
+        no_dist = self.get_indistinguishable()
+
+        genome_count = 0
+        genomes = ""
+        for group in no_dist:
+            genome_count += len(group)
+
+            if genomes:
+                genomes += " " + ",".join(group)
+            else:
+                genomes = ",".join(group)
+        
+
+        fh.write("\t".join([name, str(genome_count), str(len(no_dist)), genomes]) + "\n")
 
 
 
@@ -171,7 +230,7 @@ class ConservedRegion(object):
     
     def __init__(self, msa_f, name=None):
         # read and filter duplicates from the MSA_F
-        self.msa = self.remove_duplicates(self._read_msa(msa_f))
+        self.msa = self._read_msa(msa_f)
 
         if name:
             self.name = name
@@ -185,24 +244,19 @@ class ConservedRegion(object):
     def _read_msa(msa_f, aln_format="fasta"):
         return AlignIO.read(msa_f, aln_format)
 
-    @ staticmethod
-    def remove_duplicates(msa):
-        """ There are some duplicate genomes in Omri's list. This is a custom function to remove them. 
-        I want to remove: 378, CL136, and CL126
-        
-        """
+    def filter_msa(self, genomes):
+        """ Filters the MSA to only include the genomes supplied."""
         records = []
-        for record in msa:
+        for record in self.msa:
             header = record.description
-            org_name = header.split("__")[1]
+            
+            # name in second set of |, surrounded with brackets
+            name = header.split("|")[1][1:-1]
 
-            if org_name in ["Methylobacterium_CL126", "Methylobacterium_CL136", "Methylobacterium_378"]:
-                continue
-            else:
+            if name in genomes:
                 records.append(record)
 
-        return MultipleSeqAlignment(records)
-
+        self.msa = MultipleSeqAlignment(records)
 
     def get_region(self, start, end):
         """ Returns a region of the msa """
@@ -273,6 +327,10 @@ class ConservedRegion(object):
             
         return ultra_conserved
 
+    def find_ultra_conserved_with_errors(self, errors=1):
+        """ Finds ultra conserved regions allowing errors """
+        pass
+
     def find_potential_amplicons(self, ultra_conserved, amp_length, min_distance=100):
         """ 
         Locates regions between ultra_conserved regions and calculates the information content of the amplicon 
@@ -321,12 +379,19 @@ def process_msa(msa_f, min_primer):
     [print(str(amp) + "\t" + str(amp.get_uniqueness())) for amp in potential_amplicons]
 
 
-def process_all_msa(msa_files, min_primer, amp_length):
+def process_all_msa(msa_files, min_primer, amp_length, subset=None):
 
     all_potential_amplicons = []
     num_processed = 0
     for msa_file in msa_files:
         cr = ConservedRegion(msa_file)
+        
+        if subset:
+            genomes = []
+            with open(subset, 'r') as IN:
+                for line in IN:
+                    genomes.append(line.strip())
+            cr.filter_msa(genomes)
 
         # find potential primer regions
         ultra_conserved = cr.find_ultra_conserved(min_primer)
@@ -342,7 +407,6 @@ def process_all_msa(msa_files, min_primer, amp_length):
 
     print()
 
-
     sorted_amps = sorted(all_potential_amplicons, key=lambda amp: amp.score, reverse=True)
     
     print("{} Potential Amplicons Found".format(len(sorted_amps)))
@@ -354,6 +418,15 @@ def process_all_msa(msa_files, min_primer, amp_length):
                 unique += 1
 
     print("{} Unique Amplicons Found".format(unique))
+
+
+    # if no unique amps, we want to print a "bad amplicon summary" to let the user know how close they were
+    with open("bad_amplicon_summary.txt", 'w') as OUT:
+        OUT.write("\t".join(["amplicon", "# genomes indistinguishable", "# groups", "genomes"]) + "\n")
+        for amp in sorted_amps[:500]:
+            amp.print_bad_amp_summary()
+
+    print("Wrote bad amplicon summary to 'bad_amplicon_summary.txt'")
 
 def uniqueness_histogram(msa_files):
     uniq_hash = {}
@@ -380,9 +453,10 @@ if __name__ == "__main__":
 
     parser.add_argument("-min_primer", help="the minimum primer length (>= 10)", type=int, default=20)
     parser.add_argument("-max_primer", help="the maximum primer length (<= 40)", type=int, default=25)
+    parser.add_argument("-subset", help="filter MSA to only include these genome names as listed in the GenBank file")
 
     args = parser.parse_args()
 
     #uniqueness_histogram(args.msa)
-    process_all_msa(args.msa, args.min_primer, args.amp_len)
+    process_all_msa(args.msa, args.min_primer, args.amp_len, args.subset)
     
