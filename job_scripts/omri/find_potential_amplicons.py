@@ -33,7 +33,7 @@ class Consensus(object):
     def __str__(self):
         return self.seq
 
-    def find_consensus(self, max_entropy=0):
+    def find_consensus(self, max_entropy=100):
         consensus = ""
         entropy = []
         
@@ -42,9 +42,9 @@ class Consensus(object):
             col = self.msa[:, i]
           
             # get the most frequent character and the entropy (I should probably decouple this...)
-            consensus_nt, ent = self.shannon_entropy(col)
+            consensus_nt = self.get_ambiguous_code(col)
+            ent = self.shannon_entropy(col)
             
-            # set the consensus character if entropy is low enough
             if ent <= max_entropy:
                 consensus_symbol = consensus_nt
             else:
@@ -58,12 +58,8 @@ class Consensus(object):
 
     @staticmethod
     def shannon_entropy(seq):
-        """ Returns a tuple with the most common character and the shannon entropy for a given seq """
+        """ Returns the shannon entropy for a given seq """
 
-        # fields for selecting the character to use for the consensus
-        highest_prob = 0
-        nt_name = ""
-            
         # entropy running sum
         entropy = 0
 
@@ -72,15 +68,47 @@ class Consensus(object):
         for nt in set(seq):
             prob = seq.count(nt) / seq_len
 
-            # see if this nt has the new highest probability
-            if prob > highest_prob:
-                highest_prob = prob
-                nt_name = nt
-            
             # add the entropy weight to the running sum
             entropy += prob * math.log(prob, 2)
 
-        return nt_name, entropy * -1
+        return entropy * -1
+
+    @staticmethod
+    def get_ambiguous_code(seq):
+        """ Returns the ambiguous code for a given seq """
+
+        code_dict = {
+                # basic nt
+                'A': 'A',
+                'C': 'C',
+                'G': 'G',
+                'T': 'T',
+
+                'AC': 'M',
+                'AG': 'R',
+                'AT': 'W',
+
+                'CG': 'S',
+                'CT': 'Y',
+
+                'GT': 'K',
+                
+                'ACG': 'V',
+                'ACT': 'H',
+                'AGT': 'D',
+                'CGT': 'B',
+
+                'ACGT': 'N'
+                }
+
+        bases = set(seq)
+
+        key = "".join(sorted(bases))
+
+        if "-" in key:
+            return "-"
+        else:
+            return code_dict[key]
 
 
 class PotentialAmplicon(object):
@@ -164,18 +192,18 @@ class PotentialAmplicon(object):
                 # add the seqs to a group if dist = 0 
                 if distance == 0:
                     for group in no_dist:
-                        if g1.id in group:
-                            if g2.id not in group:
-                                group.append(g2.id)
+                        if seq1.id in group:
+                            if seq2.id not in group:
+                                group.append(seq2.id)
                             break
-                        elif g2.id in group:
-                            if g1.id not in group:
-                                group.append(g1.id)
+                        elif seq2.id in group:
+                            if seq1.id not in group:
+                                group.append(seq1.id)
                             break
                     
                     # if didn't break out, must need to make a new group
                     else:
-                        no_dist.append([g1, g2])
+                        no_dist.append([seq1.id, seq2.id])
 
         return no_dist
 
@@ -257,6 +285,7 @@ class ConservedRegion(object):
                 records.append(record)
 
         self.msa = MultipleSeqAlignment(records)
+        self.consensus = Consensus(self.msa)
 
     def get_region(self, start, end):
         """ Returns a region of the msa """
@@ -273,6 +302,7 @@ class ConservedRegion(object):
     def find_ultra_conserved(self, min_len):
         """ Finds ultra-conserved regions of at least min_len targeted at being ideal primer sites"""
         
+                
         class UltraConserved(object):
             """ Simple class to hold info about UC regions """
             def __init__(self, start, end):
@@ -298,7 +328,6 @@ class ConservedRegion(object):
                 else:
                     # other is before self
                     return self.start - other.end
-                
 
         ultra_conserved = []        
 
@@ -327,9 +356,103 @@ class ConservedRegion(object):
             
         return ultra_conserved
 
-    def find_ultra_conserved_with_errors(self, errors=1):
-        """ Finds ultra conserved regions allowing errors """
-        pass
+    def find_ambig_ultra_conserved(self, min_len, max_ambig):
+        """ 
+        Finds ultra conserved regions 
+      
+        Strategy:
+
+        1. Start a potential UC region at the beginning and after each bad character.
+        2. When a bad character is found, check if we need to terminate potential UC.
+        3. Add terminated UC regions that are long enough to finished 
+        4. Return all the finished UC regions
+
+        """
+
+
+        class UltraConserved(object):
+            """ Simple class to hold info about UC regions """
+            def __init__(self, start, end=0, ambiguities=0):
+                self.start = start
+                self.end = end
+                self.ambiguities = ambiguities
+
+            def __str__(self):
+                return "UltraConserved Region {self.start}..{self.end}".format(self=self)
+
+            @property
+            def length(self):
+                # +1 to get length from distance
+                return (self.end - self.start) + 1
+        
+            def distance(self, other):
+                """ Returns the distance between the end of one and the beginning of another as a positive value or 0 if the two overlap """
+
+                # three possible options self is before, after, or overlaps other
+                
+                # first determine if they overlap
+                if self.start <= other.end and other.start <=self.end:
+                    return 0
+
+                # now that we know there is no messy over lap, we need to see which is first
+                elif self.start < other.start:
+                    # self is before other
+                    return other.start - self.end
+                else:
+                    # other is before self
+                    return self.start - other.end
+
+        print(self.consensus.seq)
+
+        uc_finished = []
+        uc_in_progress = []
+        last_was_terminal = True        # stores whether the last character was a possible terminator
+        for i in range(len(self.consensus.seq)):
+            # check for gaps, if found, kill all uc
+            if self.consensus.seq[i] == "-":
+                last_was_terminal = True
+                
+                for uc in uc_in_progress:
+                    uc.end = i - 1
+
+                    if uc.length >= min_len:
+                        uc_finished.append(uc)
+
+                uc_in_progress = []
+                    
+            # check for ambiguous code
+            elif self.consensus.seq[i] in ["R", "Y", "K", "M", "S", "W", "B", "D", "H", "V", "N"]:
+                last_was_terminal = True
+
+                # update regions in progress
+                next_in_progress = []
+                for uc in uc_in_progress:
+                    if uc.ambiguities < max_ambig:
+                        uc.ambiguities += 1
+                        next_in_progress.append(uc)
+
+                    else:   # maximum ambig already reached
+                        uc.end = i - 1
+                        
+                        # add to final if long enough
+                        if uc.length >= min_len:
+                            uc_finished.append(uc)
+
+                uc_in_progress = next_in_progress
+
+            # not gap or ambig; must be a good position
+            else:
+                if last_was_terminal:
+                    last_was_terminal = False
+                    uc_in_progress.append(UltraConserved(start=i))
+
+        # process any open regions
+        for uc in uc_in_progress:
+            uc.end = i
+            if uc.length >= min_len:
+                uc_finished.append(uc)
+
+        return uc_finished
 
     def find_potential_amplicons(self, ultra_conserved, amp_length, min_distance=100):
         """ 
@@ -379,7 +502,7 @@ def process_msa(msa_f, min_primer):
     [print(str(amp) + "\t" + str(amp.get_uniqueness())) for amp in potential_amplicons]
 
 
-def process_all_msa(msa_files, min_primer, amp_length, subset=None):
+def process_all_msa(msa_files, min_primer, primer_ambig, amp_length, subset=None):
 
     all_potential_amplicons = []
     num_processed = 0
@@ -394,16 +517,20 @@ def process_all_msa(msa_files, min_primer, amp_length, subset=None):
             cr.filter_msa(genomes)
 
         # find potential primer regions
-        ultra_conserved = cr.find_ultra_conserved(min_primer)
+        ultra_conserved = cr.find_ambig_ultra_conserved(min_primer, primer_ambig)
+        print("{} ultra conserved regions found for {}".format(len(ultra_conserved), msa_file))
+        for uc in ultra_conserved[:10]:
+            print(str(uc))
 
-        # find amplicons between the primer regions
-        potential_amplicons = cr.find_potential_amplicons(ultra_conserved, amp_length)
+        if ultra_conserved:
 
-        all_potential_amplicons += potential_amplicons
+            # find amplicons between the primer regions
+            potential_amplicons = cr.find_potential_amplicons(ultra_conserved, amp_length)
+
+            all_potential_amplicons += potential_amplicons
 
         num_processed += 1
-
-        print("Processed {} files.".format(num_processed), end="\r")
+        print("Processed {} files.".format(num_processed), end="\n")
 
     print()
 
@@ -424,7 +551,7 @@ def process_all_msa(msa_files, min_primer, amp_length, subset=None):
     with open("bad_amplicon_summary.txt", 'w') as OUT:
         OUT.write("\t".join(["amplicon", "# genomes indistinguishable", "# groups", "genomes"]) + "\n")
         for amp in sorted_amps[:500]:
-            amp.print_bad_amp_summary()
+            amp.print_bad_amp_summary(OUT)
 
     print("Wrote bad amplicon summary to 'bad_amplicon_summary.txt'")
 
@@ -450,13 +577,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="This script is meant to be used to find potential amplicons from a set of MSA files based on shannon entropy and a uniqueness value fround from a distance matrix that can be used to tell the group of aligned sequences apart but will amplify in them all.")
     parser.add_argument("-msa", help="multiple sequence alignment file", nargs="+")
     parser.add_argument("-amp_len", help="the maximum length of the amplicon", type=int)
-
+    parser.add_argument("-ambig", help="maximum number of ambiguous bases to allow in primers", type=int, default=0)
     parser.add_argument("-min_primer", help="the minimum primer length (>= 10)", type=int, default=20)
-    parser.add_argument("-max_primer", help="the maximum primer length (<= 40)", type=int, default=25)
+    #parser.add_argument("-max_primer", help="the maximum primer length (<= 40)", type=int, default=25)
     parser.add_argument("-subset", help="filter MSA to only include these genome names as listed in the GenBank file")
 
     args = parser.parse_args()
 
     #uniqueness_histogram(args.msa)
-    process_all_msa(args.msa, args.min_primer, args.amp_len, args.subset)
+    process_all_msa(args.msa, args.min_primer, args.ambig, args.amp_len, args.subset)
     
