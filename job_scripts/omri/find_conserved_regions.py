@@ -3,10 +3,11 @@ import sys
 import argparse
 import logging
 import os
-from Bio import SeqIO 
+from Bio import SeqIO, AlignIO
 from Bio.SeqRecord import SeqRecord
 import subprocess
 import time
+import math
 
 from mypyli import samparser
 
@@ -16,7 +17,7 @@ LOG.setLevel("DEBUG")
 
 class QueryMapper(object):
 
-    def __init__(self, query_f, out_dir=None, split_len=1000, min_id=.90, min_len=500):
+    def __init__(self, query_f, out_dir=None, split_len=50, min_id=.90, min_len=40):
         self.query_f = query_f
         self.q_basename = os.path.splitext(os.path.basename(query_f))[0]
 
@@ -132,6 +133,7 @@ class QueryMapper(object):
                        
                         split_number += 1
 
+
     @staticmethod
     def param_dict_to_header(params):
         """ Converts a param dict to a header """
@@ -175,7 +177,8 @@ class QueryMapper(object):
         else:
             prog = "mapPacBio.sh"
 
-        cmd = "{} ref={ref} in={split_f} local=t ambig=all nodisk overwrite=t sam=1.4 threads={cpus} out={out}".format(
+        #cmd = "{} ref={ref} in={split_f} local=t ambig=all nodisk overwrite=t sam=1.4 threads={cpus} out={out}".format(
+        cmd = "{} ref={ref} in={split_f} local=t sssr=.01 secondary=t ambig=all maxsites=30 minid=.20 nodisk overwrite=t sam=1.4 threads={cpus} out={out}".format(
                 prog,
                 ref=reference,
                 split_f=self.split_f,
@@ -185,7 +188,7 @@ class QueryMapper(object):
         print("Running:\n    {}".format(cmd), file=sys.stderr)
         #code = subprocess.call(cmd.split(" "))         # safe way
     
-        code = subprocess.call(cmd, shell=True)         # dangerous way
+        code = subprocess.call(cmd + " 2>>bbmap.err", shell=True)         # dangerous way
 
         if code:
             raise Exception("The bbmap command failed")
@@ -211,7 +214,10 @@ class AmpliconAligner(object):
 
         align_f = out_dir + "/" + os.path.splitext(os.path.basename(fasta_f))[0] + ".afa"
 
-        align_f = align_f
+        if os.path.isfile(align_f):
+            LOG.info("Found alignment file '{}'. Skipping alignment step.".format(align_f))
+            return align_f
+
         cls.run_muscle(fasta_f, align_f)
     
         return align_f
@@ -336,7 +342,7 @@ class Amplicon(object):
    
     ampliconIndex = 0       # this is for indexing amplicons
 
-    def __init__(self, query1, query2, max_len, min_len=100):
+    def __init__(self, query1, query2, max_len, min_len=20):
         self.q1, self.q2 = self._order_queries(query1, query2)
 
         self.amp_index = self.ampliconIndex
@@ -366,14 +372,24 @@ class Amplicon(object):
             # q2 is before q1
             return q2, q1
 
-    def check_all_distance(self):
+    def check_all_distance(self, return_failed=False):
         """ Checks if query1 and query2 are spaced an appropriate distance apart in all genomes. True if so, else false """
 
+        failed = []
         for genome in self.q1.alignments:
             try:
                 self.get_correctly_spaced(genome)
             except ValueError:
-                return False
+                if return_failed:
+                    failed.append(genome)
+                else:
+                    return False
+       
+        if return_failed:
+            if failed:
+                return False, failed
+            else:
+                return True, failed
         else:
             return True
 
@@ -411,9 +427,11 @@ class Amplicon(object):
 class AlignedAmplicon(object):
     """ NOTE: THIS CLASS HAS NO PROGRAM RELATION TO Amplicon. THE NAMES ARE SIMILAR BY BIOLOGY ONLY"""
 
-    def __init__(self, msa_f, name=None):
+    def __init__(self, msa_f, min_prim, name=None):
         self.msa_f = msa_f
         self.msa = self._read_msa(msa_f)
+
+        self.min_prim = min_prim
 
         if name:
             self.name = name
@@ -421,21 +439,70 @@ class AlignedAmplicon(object):
             self.name = os.path.splitext(os.path.basename(msa_f))[0]
 
         self.consensus = Consensus(self.msa)
-        
-    def get_uniqueness(self):
-        """ Makes a distance matrix using the MSA and returns the lowest value """
 
+        # params relating to uniqueness
+        self.max_uniqueness = None
+        self.not_unique = None
+        self.min_unique_start = None
+        self.min_unique_end = None
+
+    @classmethod
+    def print_amplicon_summaries(cls, amplicons, out_dir):
+
+        if not os.path.isdir(out_dir):
+            os.mkdir(out_dir)
+
+        # calc uniqueness stats
+        for amplicon in amplicons:
+            amplicon.set_minimum_unique_region()
+        
+        with open(out_dir + "/" + "amplicon_stats.txt", 'w') as STATS, open(out_dir + "/" + "amplicon_masks.txt", 'w') as MASKS:
+            STATS.write("\t".join(["amplicon", "uniqueness", "num_not_unique", "not_unique_groups"]) + "\n")
+
+            for amplicon in sorted(amplicons, key=lambda amp: (amp.max_uniqueness, -amp.num_not_unique), reverse=True):
+
+                if amplicon.max_uniqueness:
+                    stats_list = [amplicon.name, str(amplicon.max_uniqueness), str(amplicon.num_not_unique), "None"]
+                    amplicon.write_mask(MASKS)
+            
+                else:
+                    stats_list = [amplicon.name, str(amplicon.max_uniqueness), str(amplicon.num_not_unique), "\t".join([",".join(group) for group in amplicon.not_unique])]
+
+
+
+                STATS.write("\t".join(stats_list) + "\n")
+
+
+    @property
+    def num_not_unique(self):
+        if self.max_uniqueness is None:
+            raise AttributeError("get_uniqueness() has not been ran.")
+
+        if self.not_unique is None:
+            return 0
+        else:
+            count = 0
+            for group in self.not_unique:
+                count += len(group)
+
+            return count
+
+
+    def get_uniqueness(self, start, end, return_nodist=False):
+        """ Makes a distance matrix using the MSA and returns the lowest value """
         # arbitrarily high starting number
         min_distance = 99999
 
         # calculate the distance using lower triangular algorithm
-        #print()
-        #print()
+        print()
+        print()
         #print("Here1")
-        for seq1 in self.msa:
+        seqs = self.msa[:, start:end]
+        no_dist = []
+        for seq1 in seqs:
             #print()
 
-            for seq2 in self.msa:
+            for seq2 in seqs:
 
                 # lower triangular algorithm
                 if seq1 == seq2:
@@ -452,29 +519,72 @@ class AlignedAmplicon(object):
                 if distance < min_distance:
                     min_distance = distance
 
-                # if min = 0 we know that the uniqueness is 0 so no need to process any more
                 if min_distance == 0:
-                    return 0
+                    if return_nodist:
+                        new_no_dist = []
+                        s1_group = None
+                        s2_group = None
+                        for group in no_dist:
+                            if seq1.description in group:
+                                s1_group = group
 
-        return min_distance
+                            if seq2.description in group:
+                                s2_group = group
+                           
+                            if seq1.description not in group and seq2.description not in group:
+                                new_no_dist.append(group)
+
+                        # check exactly what the additional group should be
+                        if s1_group and s2_group is None:
+                            print("h1")
+                            s1_group.append(seq2.description)
+                            new_no_dist.append(s1_group)
+                        elif s1_group is None and s2_group:
+                            print("h2")
+                            s2_group.append(seq1.description)
+                            new_no_dist.append(s2_group)
+                        elif s1_group and s2_group:
+                            # check if it is the same group
+                            if s1_group is s2_group:
+                                continue
+                            print("h3")
+                            group = set(s1_group + s2_group)
+                            new_no_dist.append(list(group))
+                        else:       # neither is in a group
+                            print("h4")
+                            new_no_dist.append([seq1.description, seq2.description])
+                        
+                        no_dist = new_no_dist
+                        
+                    else:
+                        # if min = 0 we know that the uniqueness is 0 so no need to process any more
+                        return 0
         
+        if return_nodist:
+            return min_distance, no_dist
+        else:
+            return min_distance
+        
+    def write_mask(self, fh):
 
-    def print_minimum_unique_mask(self, fh=sys.stdout):
+        lprim = self.consensus.seq[0:self.min_unique_start]
+        rprim = self.consensus.seq[self.min_unique_start:self.min_unique_end]
+        num_Ns = self.min_unique_end - self.min_unique_start
+
+        mask = lprim + "N"*num_Ns + rprim
+
+        header = ">{self.name} [{self.min_unique_start}:{self.min_unique_end}] max_unique={self.max_uniqueness}".format(self=self)
+
+        fh.write(header + "\n" + mask + "\n")
+        
+    def set_minimum_unique_region(self):
         """ 
-        Prints a minimum unique mask to fh where minimum unique mask is flanking regions as long as possible with a center that is sufficient to differentiate each seq from one another
+        Sets a minimum unique region to fh where minimum unique mask is flanking regions as long as possible with a center that is sufficient to differentiate each seq from one another
         
-        Working from both ends, add one base and as many bases of 0 entropy as possible and check uniqueness.
+        The algorithm:
 
-        It may be useful to use a pseudo binary search algorithm to speed things up. 
-
-        The prefect mask will have an exact minumum of bases sufficient for uniqueness centered in the amplicon. 
-        The minimum mask will have a unique mask in the center with at least min_primer length on each side.
-        
-        
-        So the algorithm:
-
-        1. Split the seq into two parts at the midpoint. Start of left is start. End of left is midpoint -1.
-            Start of right is midpoint end of right is end
+        1. Split the seq into two parts at the midpoint. Start of left is start + primer. End of left is midpoint -1.
+            Start of right is midpoint end of right is end - primer - 1
         
         :: Begin binary search
         2. Get midpoint of both sides from start to end
@@ -487,7 +597,39 @@ class AlignedAmplicon(object):
         seq_len = len(self.msa[0])
         midpoint = int(seq_len / 2)     # get an approximate midpoint
 
+        lstart = self.min_prim
+        lend = midpoint
+        rstart = midpoint
+        rend = seq_len - self.min_prim - 1      # - 1 for half open index
+
+        # first check if this amplicon can possibly be unique
+        uniqueness, no_dist = self.get_uniqueness(lstart, rend, return_nodist=True)
         
+        self.max_uniqueness = uniqueness
+        if uniqueness == 0:
+            self.not_unique = no_dist
+            return
+       
+        while True:
+            # get midpoints
+            lmid = int((lend - lstart) / 2) + lstart
+            rmid = int((rend - rstart) / 2) + rstart
+
+            # test if range is unique
+            if self.get_uniqueness(lmid, rmid):
+                # if we are within 5 (so within 10 for both front and back) stop
+                if lmid - lstart <= 5:
+                    self.min_unique_start = lmid
+                    self.min_unique_end = rmid
+                    return
+                else:
+                    # otherwise make the range more narrow
+                    lstart = lmid
+                    rend = rmid
+            else:
+                # make the range more broad
+                lend = lmid
+                rstart = rmid
 
     @staticmethod
     def _read_msa(msa_f, aln_format="fasta"):
@@ -729,6 +871,10 @@ def main(args):
     LOG.info("{} of {} splits had alignments in all references.".format(str(len(mapped_all)), str(len(qry_regions))))
 
 
+    if not mapped_all:
+        LOG.warning("No splits had alignments in all references. Aborting.")
+        return
+
     #
     ## Make and check amplicons
     #
@@ -746,6 +892,11 @@ def main(args):
     LOG.info("Making and checking potential amplicons...")
 
     amplicons = []
+
+    # these will be used for some reporting stats
+    failed_amplicons = {}
+    total_amplicons = 0
+    
     num_aln = len(mapped_all)
     for indx1 in range(num_aln):
 
@@ -763,6 +914,8 @@ def main(args):
             if indx2 == num_aln:
                 break
             
+            total_amplicons += 1 
+
             qry2 = mapped_all[indx2]
         
             # make the Amplicon, exception if query is inappripriate distance apart
@@ -773,12 +926,46 @@ def main(args):
                 break
 
             # add the amplicon if it checks out
-            if amp.check_all_distance():
+            correct_dist, failed = amp.check_all_distance(return_failed=True)
+            if correct_dist:
                 amplicons.append(amp)
+            else:
+                # add another to the failed column
+                for genome in failed:
+                    try:
+                        failed_amplicons[amp].append(genome)
+                    except KeyError:
+                        failed_amplicons[amp] = [genome]
 
             indx2 += 1
 
     LOG.info("{} potential amplicons found.".format(len(amplicons)))
+
+    # check if we need to go into amplicon report mode
+    if len(amplicons) < 15:
+        LOG.info("Low number of potential amplicons detected (of {} total), printing some statistics.".format(total_amplicons))
+        num_failed_per_genome = {}
+        num_failing_genomes = {}
+        for amp in failed_amplicons:
+            for genome in failed_amplicons[amp]:
+                num_failed_per_genome[genome] = num_failed_per_genome.get(genome, 0) + 1
+
+            num_failing_genomes[len(failed_amplicons[amp])] = num_failing_genomes.get(len(failed_amplicons[amp]), 0) + 1
+
+        # print the stats
+        LOG.info("Failing Amplicon Histogram:")
+        LOG.info("  # fail\tcount")
+        for num in sorted(num_failing_genomes, reverse=True):
+            LOG.info("  {num}\t{count}".format(num=num, count=num_failing_genomes[num]))
+
+        LOG.info("Failing Genome Histogram:")
+        LOG.info("  genome\t# fail")
+        for genome in sorted(num_failed_per_genome, key=lambda k: num_failed_per_genome[k], reverse=True):
+            LOG.info("  {genome}\t{count}".format(genome=genome, count=num_failed_per_genome[genome]))
+
+    if not amplicons:
+        LOG.warning("Aborting due to lack of amplicons.")
+        return
 
     
     #
@@ -790,7 +977,7 @@ def main(args):
     for amp in amplicons:
         shopping_list += amp.get_seq_shopping_list()
 
-    written_fastas = write_seqs_from_shopping_list(args.i, shopping_list[:9], out_dir=args.out_dir + "/conserved_regions")
+    written_fastas = write_seqs_from_shopping_list(args.i, shopping_list, out_dir=args.out_dir + "/conserved_regions")
 
 
     #
@@ -807,20 +994,29 @@ def main(args):
 
     AmpliconAligner.wait_for_job()
 
+    # a short sleep to give the system time to write the MSA
+    time.sleep(20)
 
+    #
+    ## Write the final amplicon info
+    #
+    aligned_amps = []
     for aln_f in aligned_files:
-        AlignedAmplicon(aln_f)
+        aligned_amps.append(AlignedAmplicon(aln_f, args.min_prim))
+
+    AlignedAmplicon.print_amplicon_summaries(aligned_amps, args.out_dir)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Calculates ANI (average nucleotide identity) and AF (alignment fraction) between two genomes. This is done by breaking up each query genome into pieces and mapping those pieces back to the other genome in the pair. AF is the fraction of pieces that map back. ANI is the average identity of the pieces that map back. This script outputs a matrix where each cell is a tuple (ANI, AF). Currently, ANI is a percent and AF is a decimal but I should change them to make it a consistent measure before I put this in the scripts for others directory.")
 
     parser.add_argument("-i", help="bunch of fasta files to all-by-all compare", nargs="+", required=True)
     parser.add_argument("-qry", help="the file to be broken up and used as the query (if not the first one in '-i'")
-    parser.add_argument("-split_len", help="target length to split query into", type=int, default=500)
+    parser.add_argument("-split_len", help="target length to split query into", type=int, default=50)
     parser.add_argument("-min_id", help="minumum id for an alignment", type=float, default=.90)
-    parser.add_argument("-min_len", help="minumum length for an alignment", type=int, default=500)
+    parser.add_argument("-min_len", help="minumum length for an alignment", type=int, default=40)
     parser.add_argument("-out_dir", help="directory to store output", default=os.getcwd())
-    parser.add_argument("-amp_len", help="maximum amplicon length [(%default)s]", type=int, default=400)
+    parser.add_argument("-amp_len", help="maximum amplicon length [%(default)s]", type=int, default=400)
+    parser.add_argument("-min_prim", help="minumum primer length", default=20, type=int)
     args = parser.parse_args()
 
     main(args)
