@@ -19,7 +19,7 @@ def plot_trait_categories(df):
         ax.set_ylabel("Spearman Correlation")
         fig = ax.get_figure()
         fig.savefig(str(col).replace(" ", "_") + ".correlation.png")
-        fig.close()
+        plt.close(fig)
 
 def plot_trait_panel_plot(df):
     """ Makes a pannelplot for each level 1 KO group with each level 2 as a pannel """
@@ -88,7 +88,6 @@ def plot_trait_panel_plot(df):
             f.savefig(str(plot_name).replace(" ", "_") + ".correlation.png")
             plt.close(f)
 
-
 def plot_genomes(df):
     """ Makes plots of the correlation for each category for each genome """
 
@@ -115,12 +114,53 @@ def plot_genomes(df):
         fig.savefig(str(col).replace(" ", "_") + ".correlation.png")
         plt.close(fig)
 
+
+def plot_overall(df):
+    """ Plots the Overall;Overall correlation on the Y and either NSTI or sample name on the X """
+    
+    if str(df.loc[df.index[0], "NSTI"]) == "None":
+        df = df.sort_index()
+        
+        xvals = range(len(df.index))
+
+
+        fig = plt.figure()
+
+        ax = fig.add_subplot(111)
+
+        ax.scatter(x=xvals, y=df["Overall;Overall"])
+        ax.set_title("Overall")
+        
+        ax.set_xlabel("Sample")
+        ax.set_xticks(xvals)
+        ax.set_xticklabels(df.index, fontsize="x-small", rotation="vertical", ha="center")
+        
+        ax.set_xlim(-1, xvals[-1]+1)
+        
+        ax.set_ylim(-.1, 1.1)
+        ax.set_ylabel("Spearman Correlation")
+        
+        fig.savefig("Overall.correlation.png")
+        plt.close(fig)
+
+    else:
+        ax = df.plot(x="NSTI", y="Overall;Overall", title="Overall", kind="scatter", xlim=(-.01, max(df["NSTI"]) + .01), ylim=(-.1, 1.1)) 
+
+        ax.set_xlabel("NSTI")
+        ax.set_ylabel("Spearman Correlation")
+        fig = ax.get_figure()
+        fig.savefig("Overall.correlation.png")
+        plt.close(fig)
+
+       
+
         
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Makes plots from PICRUSt correlation tables.")
     parser.add_argument("-table", help="the correlation table; should have NSTI as a field", required=True)
     parser.add_argument("-rows", help="make plots from the rows", action="store_true")
     parser.add_argument("-cols", help="make plots from the cols", action="store_true")
+    parser.add_argument("-overall", help="plots the overall values", action="store_true")
     args = parser.parse_args()
 
     df = pandas.read_csv(args.table, sep="\t", index_col=0, header=0)
@@ -130,3 +170,6 @@ if __name__ == "__main__":
 
     if args.cols:
         plot_trait_panel_plot(df)
+
+    if args.overall:
+        plot_overall(df)

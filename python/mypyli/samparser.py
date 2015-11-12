@@ -14,10 +14,21 @@ def parse(sam_fh, aligned_only=False, mapq=1, local=False):
         aln_dict['flag'] = int(aln_dict['flag'])
 
         # store the optional attribs
-        aln_dict.update({'op_fields': line[:-1].split("\t")[11:]})
+        attrib_dict = {}
+        for attrib in line[:-1].split("\t")[11:]:
+            name, type, value = attrib.split(":")
+
+            if type == "f":
+                attrib_dict[name] = float(value)
+            elif type == "i":
+                attrib_dict[name] = int(value)
+            else:
+                attrib_dict[name] = value
+
+        aln_dict["attributes"] = attrib_dict
 
         if aligned_only:
-            if aln_dict['flag'] == 4:
+            if aln_dict['flag'] in [4, 516]:
                 continue
         
         if aln_dict['mapq'] < mapq:
@@ -126,23 +137,30 @@ class SamRecord(object):
     def _parse_cigar(self):
         cigar_stats = {k: 0 for k in ['M', 'I', 'D', 'N', 'S', 'H', 'P', '=', 'X']}
         length = 0
-        if "=" in self.cigar:       # sam 1.4
-            m = re.findall("(\d+[MIDNSHP=X])", self.cigar)
-            if m:
+        m = re.findall("(\d+[MIDNSHP=X])", self.cigar)
+        if m:
                 
-                for group in m:
-                    cigar_stats[group[-1]] = cigar_stats.get(group[-1], 0) + int(group[:-1])
-                    length += int(group[:-1])
+            for group in m:
+                cigar_stats[group[-1]] = cigar_stats.get(group[-1], 0) + int(group[:-1])
+                length += int(group[:-1])
                 
-                self.length = length
-                self.matches = cigar_stats['=']
-                self.mismatches = cigar_stats['X']
-                self.soft_clipped = cigar_stats['S']
+            self.length = length
+            self.soft_clipped = cigar_stats['S']
                     
-            else:
-                raise ValueError("Cigar string {} could not be parsed. It may be malformed.".format(self.cigar))
         else:
-            print((self.qname, self.mapped, self.cigar, self.mapq))
-            raise NotImplementedError("Right now, this requires SAM format 1.4")
+            raise ValueError("Cigar string {} could not be parsed. It may be malformed.".format(self.cigar))
+        
+        # check for format 1.4
+        if "=" in self.cigar:
+            self.matches = cigar_stats['=']
+            self.mismatches = cigar_stats['X']
+        else:   # old format
+            # we can get something like mismatches from the edit distance
+            try:
+                edit_dist = self.attributes["NM"]
+            except KeyError:
+                raise ValueError("Entry doesn't have the edit distance field 'NM' and is in the old style SAM format. It is impossible to calculate mismatches.")
 
-
+            # mismatches is the edit distance - insertions and deletions
+            self.mismatches = edit_dist - (cigar_stats["I"] + cigar_stats["D"])
+            self.matches = self.length - edit_dist

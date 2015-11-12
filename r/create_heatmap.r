@@ -103,12 +103,12 @@ create_heatmap.r <path_to_params_file>  [ --make_params_file  --help ]
 ## Functions
 #
 prepare_data <- function(otus, rarefy_to, relative=FALSE, log2_scale=FALSE, keep_samples=0, trim_otus_below=0) {
-
     # delete taxonomy column if it exists
     otus <- otus[, names(otus) != "taxonomy"]
-        
+ 
+       
     # ensure counts are whole numbers
-    otus <- round(otus, digits=0)
+    #otus <- round(otus, digits=0)
 
     # filter out columns that don't have enough reads to rarefy
     otus <- otus[, colSums(otus) > rarefy_to, drop=FALSE]
@@ -258,8 +258,10 @@ if ( ! require('pheatmap') ) {
 }
 
 # read in OTU table -- move to the prepare data function? - probably
+
 otus <- read.table(get('otus', params), sep="\t", header=T, row.names = 1, check.names=F)
 
+print(colSums(otus[, names(otus) != "taxonomy"]))
 
 ###
 #

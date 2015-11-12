@@ -2,6 +2,9 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
+from matplotlib import rcParams
+rcParams.update({'figure.autolayout': True})
+
 def histogram(data, bins):
     """ 
     Returns a matplotlib ax object or a histogram, specializes in 
@@ -47,3 +50,5 @@ def stacked_bar_plot(data, stack_cols, colors=["blue", "green", "red", "cyan", "
 
     return ax
 
+def save_ax(ax, file):
+    ax.get_figure().savefig(file)

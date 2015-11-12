@@ -29,6 +29,8 @@ import traceback
 # TODO With JGI's initiative to make portals for all IMG data, there are some weird naming conventions for things that were sequenced at other locations so do not have a JGI portal. So best I can tell, such projects do not have a project name but the download link (with a different format) gives the organism lookup name directly.
         # Right now, this isn't a big enough problem to address but, if it becomes bigger, something will need to be done.
 
+# TODO After IMG update, metagenome projects have different params than non-metagenome projects on IMG
+
 LOG = logging.getLogger(__name__)
 
 # turn up the level of the requests logger becuase it is noisy
@@ -414,7 +416,6 @@ class JGIOrganism(object):
         parser = MetadataParser()
         return parser.get_metadata(md_table)
 
-
     def download_data(self, datatype):
         """ 
         Downloads data corresponding to the datatype where datatype is either among the
@@ -423,7 +424,25 @@ class JGIOrganism(object):
  
         LOG.debug("Trying to download '{}' for {}".format(str(datatype), str(self))) 
         if datatype in self.IMG_DATA:
+
+            
+            # set the prefix
             try:
+                prefix = self.prefix
+            except:
+                prefix = self.taxon_oid
+
+            
+            # check if we are going to be able to downloadload this
+        
+            if not self.interface.check_IMG_download(prefix, datatype):
+                self.download_reports[datatype] = "skipped"
+                return
+
+
+            # request the data from IMG 
+            try:
+                
                 # download IMG data
                 tmpfile = self._img_data_request(datatype)
                 payload = self._get_img_download_payload(datatype, tmpfile)
@@ -431,11 +450,6 @@ class JGIOrganism(object):
                 self.download_reports[datatype] = "failed"
                 raise 
 
-            # set the prefix
-            try:
-                prefix = self.prefix
-            except:
-                prefix = self.taxon_oid
 
             self.download_reports[datatype] = self.interface.download_img_file(payload, prefix, datatype)
             
@@ -580,8 +594,8 @@ class JGIOrganism(object):
        
 
         # It looks like JGI now has a new portal section for metagenomes... these need to be uncommented for metagenome data (if you end up with blank files, try uncommenting this.
-        payload['section'] = "MetaDetail"
-        payload['data_type'] = "Assembled"
+        #payload['section'] = "MetaDetail"
+        #payload['data_type'] = "Assembled"
 
         # request the data be generated
         request = self.interface.session.post(IMG_LOOKUP, data=payload, headers=self.interface.header)
@@ -1085,13 +1099,12 @@ class JGIInterface(object):
         # update the preferences
         for arg in kwargs:
             if arg in payload:
-                print("Yes")
                 payload[arg] = kwargs[arg]
             else:
                 raise ValueError("kwarg {} is not a valid preference.".format(arg))
 
         request = self.session.post(IMG_LOOKUP, data=payload, headers=self.header)
-        print(request.text)
+        #print(request.text)
 
     def _resolve_path_conflicts(self, files):
         """ 
@@ -1162,7 +1175,7 @@ class JGIInterface(object):
 
         for file, suffix in file_dict.items():
             local_path = prefix + "." + suffix
-            if self._proceed_with_download(local_path, file=file):
+            if self._proceed_with_download(local_path):
                 self._download_data(DATA + file.url, local_path)
                 download_report[str(file)] = "successful"
             else:
@@ -1177,13 +1190,12 @@ class JGIInterface(object):
             request = self.session.post(IMG_LOOKUP, data=payload, headers=self.header)
         else:
             request = self.session.post(IMG_DATA, data=payload, headers=self.header)
-        if self._proceed_with_download(local_path, request=request):
-            with open(local_path, 'w') as OUT:
-                OUT.write(request.text)
-            LOG.info("Downloading {} for {} to\n    {}\n\n".format(datatype, prefix, local_path))
-            return "successful"
-        else:
-            return "skipped"
+
+        LOG.info("Downloading {} for {} to\n    {}\n\n".format(datatype, prefix, local_path))
+        with open(local_path, 'w') as OUT:
+            OUT.write(request.text)
+
+        return "successful"
 
     def _download_data(self, url, local_path):
         """ 
@@ -1202,11 +1214,17 @@ class JGIInterface(object):
                     if chunk:  # filter out keep-alive new chunks
                         fh.write(chunk)
                         fh.flush()
-        except IOError:
+        except IOError as e:
 
-            LOG.warning("Problem downloading to local path {}".format(local_path))
+            LOG.warning("Problem downloading to local path {}\n{}".format(local_path, e))
 
-    def _proceed_with_download(self, local_path, file=None, request=None):
+    def check_IMG_download(self, prefix, datatype):
+        """ This is an upfront check if we should proceed with the download of IMG data. This saves lots of time """
+        local_path = prefix + "." + JGIOrganism.IMG_DATA_SUF[datatype]
+
+        return self._proceed_with_download(local_path)
+
+    def _proceed_with_download(self, local_path):
         """ 
         Checks the local path to ensure no unintentional clobbering.
         
@@ -1234,96 +1252,6 @@ class JGIInterface(object):
 
         else:
             return True
-
-
-
-
-def main2(args):
-    """
-    Main function to manipulate the classes to download data.
-    
-    Maybe should be incorporated into JGIInterface.
-    """
-    
-    interface = JGIInterface(args.login, force=args.force, convert=args.convert, resume=args.resume)
-    interface.make_entries(args.ids, args.id_type, prefix=args.names)
-
-
-    # if download from path
-    # perhaps let user specify name for file using the names argument?
-    if args.download:
-        local_path = args.download.split("/")[-1]
-        interface.download_data(args.download, local_path)
-        sys.exit()
-    
-    if args.get:
-        failed_log = []
-        # loop through entries collecting failed
-        for entry in interface.entries:
-           
-            # loop through regexes collecting failed
-            failed_regex = []
-            for download_regex in args.get:
-                # check if the data types match the entry
-                if (type(download_regex) == tuple and type(entry) == JGIEntry) or \
-                            (type(download_regex) == str and type(entry) == IMGEntry):
-                    download_entry = entry
-
-                else:
-                    if args.convert:
-                        try:
-                            download_entry = interface.convert_entry(entry)
-                        except PortalError as e:
-                            print(e, file=sys.stderr)
-                            failed_log.append(download_regex)
-                            continue
-                    else:
-                        raise ValueError("Incorrect --get type for your id. Specify --convert to convert between ids.")
-
-                # try to download data
-                try:
-                    download_entry.download_data(download_regex)
-            
-                except (DataNotAvailable, PortalError) as e:
-                    print(e, file=sys.stderr, end="\n\n")
-                    failed_regex.append(download_regex)
-            
-            # write to the failed log
-            failed_log += ["{}: failed data download '{}'".format(entry.id, regex) for regex in failed_regex]
-
-        if failed_log:
-            print("\n\nLog of failed downloads:")
-            [print("    " + entry) for entry in failed_log]
-        else:
-            print("\n\nAll files downloaded successfully!")
-        if interface.overwritten_paths:
-            print("\n\nOverwritten paths:")
-            [print("    " + path) for path in interface.overwritten_paths]
-
-        if interface.skipped_paths:
-            print("\n\nSkipped paths:")
-            [print("    " + path) for path in interface.skipped_paths]
-        
-    else:
-        # this prints available files for all ids, sometimes this may not be wanted
-        # right now, I'll just give a message telling how to interrupt
-        failed_ids = []
-        for entry in interface.entries:
-            print("Printing available files for all ids. Press Ctrl+c to interrupt.", file=sys.stderr)
-            entry.print_available_files()
-
-            if args.convert:
-                try:
-                    conv_entry = interface.convert_entry(entry)
-                except PortalError as e:
-                    print(e, file=sys.stderr, end="\n\n")
-                    failed_ids.append(entry)
-                    continue
-                conv_entry.print_available_files()
-
-        if failed_ids:
-            print("\n\nThere were errors in fetching the available files for the following ids:")
-            [print("    " + entry.id) for entry in failed_ids]
 
 
 def init_organisms(interface, ids, id_type, names = None):

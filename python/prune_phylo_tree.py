@@ -33,7 +33,9 @@ class TreeEditor(object):
 
     def read_tree(self, tree_f, format="phyloxml"):
         """ Use biopython to read in a tree """
-        self.tree = Phylo.read(tree_f, format)
+
+        # comments are confidence allows all digit node names to parse correctly
+        self.tree = Phylo.read(tree_f, format, comments_are_confidence=True)
         
     def write_tree(self, format, path=None):
         """ Use biopython to write the tree """

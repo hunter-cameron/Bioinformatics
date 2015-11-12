@@ -228,7 +228,7 @@ def main(args):
     refs = sorted(table[qrys[0]].keys())
 
     # write the correlation table with tuples and also the classification table
-    with open("quantified_table.csv", 'w') as QUAN, open("classification_table.csv", "w") as CLAS:
+    with open(args.out, 'w') as QUAN:
         print("\t".join(["query"] + refs), file=QUAN)
         for q in qrys:
             quant_arr = [q]
@@ -244,7 +244,6 @@ def main(args):
                 
 
             print("\t".join(quant_arr), file=QUAN)
-            print("\t".join(clas_arr), file=CLAS)
 
 def classify_relationship(gANI, AF):
     """ Returns a classification index based on the following coding scheme:
@@ -301,7 +300,7 @@ if __name__ == "__main__":
 
     parser.add_argument("-i", help="bunch of fasta files to all-by-all compare", nargs="+", required=True)
     parser.add_argument("-ref", help="bunch of fasta files to use as the reference group (if you don't want all-by-all)", nargs="+")
-
+    parser.add_argument("-out", help="filepath for the quantified table", default="quantified_table.tab")
     args = parser.parse_args()
 
     main(args)

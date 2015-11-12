@@ -13,13 +13,13 @@ def run_full_correlation(pred_f, obs_f, metadata_f, pa_f, out_f):
     ko_cat_names = sorted(ko_categories.keys())
     plant_lineages = sorted(plant_associated.keys())
 
-    headers = ko_cat_names + plant_lineages
+    headers = ["Overall;Overall"] +  ko_cat_names + plant_lineages
 
     category_dict = ko_categories.copy()    
     category_dict.update(plant_associated)
 
     with open(out_f, 'w') as OUT:
-        OUT.write("\t".join(["genome"] + ko_cat_names + ["pa_" + p for p in plant_lineages] + ["NSTI"]) + "\n")
+        OUT.write("\t".join(["genome"] + ["Overall;Overall"] +  ko_cat_names + ["pa_" + p for p in plant_lineages] + ["NSTI"]) + "\n")
 
         pred_ttm = picrust.TraitTableManager(pred_f)
         obs_ttm = picrust.TraitTableManager(obs_f)
@@ -39,8 +39,12 @@ def run_full_correlation(pred_f, obs_f, metadata_f, pa_f, out_f):
             except KeyError:
                 nsti = None
 
-
+            # calculate the correlation by group
             correl_dict = get_correlation_dict(obs, pred, category_dict)
+
+            # calculate the overall correlation
+            cor = obs.correlation(pred, traits=pred_ttm.traits)
+            correl_dict["Overall;Overall"] = cor
 
             OUT.write("\t".join([obs.name] + [str(correl_dict[name]) for name in headers] + [str(nsti)]) + "\n")
 
