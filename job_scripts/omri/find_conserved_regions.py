@@ -21,7 +21,6 @@ class QueryMapper(object):
         self.query_f = query_f
         self.q_basename = os.path.splitext(os.path.basename(query_f))[0]
 
-
         # set up the outdir
         if out_dir is None:
             self.out_dir = self.q_basename
@@ -51,19 +50,21 @@ class QueryMapper(object):
 
         r_basename = os.path.splitext(os.path.basename(ref_f))[0]
 
-        bbmap_f = self.out_dir + self.q_basename + "__--__" + r_basename + ".sam"
+        sam_f = self.out_dir + self.q_basename + "__--__" + r_basename + ".sam"
 
         # skip if this is done
-        if not os.path.isfile(bbmap_f):
+        if not os.path.isfile(sam_f):
             LOG.info("Mapping {} to {}...".format(self.split_f, ref_f))
-            self.run_bbmap(ref_f, bbmap_f)
+            #self.run_bbmap(ref_f, sam_f)
+            self.run_bowtie2(ref_f, sam_f)
+            #self.run_bwa(ref_f, sam_f)
         else:
             LOG.info("Skipping mapping {} to {}...".format(self.split_f, ref_f))
 
         # parse each hit in the SAM file
         alns_found = 0
         quality_alns = 0
-        for record in self.parse_SAM_file(bbmap_f):
+        for record in self.parse_SAM_file(sam_f):
             alns_found += 1
             if record.mapped and record.perc_id >= self.min_id:
                 qry_region = GenomeRegion.from_header(record.qname)
@@ -79,10 +80,6 @@ class QueryMapper(object):
         """ 
         Splits query into fragments of around split_len
 
-        TODO: Add a small algorithm to calculate the actual split_len based on the
-        length of the contig to get it as close as possible to the supplied split_len
-
-        Returns the total length of the sequences.
         """
 
         # read in existing split file if it exists
@@ -105,6 +102,7 @@ class QueryMapper(object):
                     seq = record.seq
                     seq_len = len(seq)
                 
+                    # skip tiny sequences
                     if seq_len < self.split_len:
                         continue
 
@@ -112,11 +110,18 @@ class QueryMapper(object):
                     # one another in length
                     leftovers = seq_len % self.split_len
                     extra_per = int(leftovers / int(seq_len / self.split_len)) + 1
-                    split_len = self.split_len + extra_per
 
                     # split the sequence into chunks and write each to the split_f 
                     # prepending the split index to the header
-                    for seq_indx in range(0, seq_len, split_len):
+                    seq_indx = 0
+                    while seq_indx < seq_len:
+                        # see if there are any leftovers remaining
+                        if leftovers:
+                            split_len = self.split_len + extra_per
+                            leftovers -= extra_per
+                        else:
+                            split_len = self.split_len
+                        
                         # split out the seq
                         sp_seq = seq[seq_indx:seq_indx+split_len]
 
@@ -132,7 +137,7 @@ class QueryMapper(object):
                         SeqIO.write(seqobj, OUT, 'fasta')
                        
                         split_number += 1
-
+                        seq_indx += split_len
 
     @staticmethod
     def param_dict_to_header(params):
@@ -178,7 +183,7 @@ class QueryMapper(object):
             prog = "mapPacBio.sh"
 
         #cmd = "{} ref={ref} in={split_f} local=t ambig=all nodisk overwrite=t sam=1.4 threads={cpus} out={out}".format(
-        cmd = "{} ref={ref} in={split_f} local=t sssr=.01 secondary=t ambig=all maxsites=30 minid=.20 nodisk overwrite=t sam=1.4 threads={cpus} out={out}".format(
+        cmd = "{} ref={ref} in={split_f} local=t sssr=.01 secondary=t ambig=all maxsites=9999 minid=.20 nodisk overwrite=t sam=1.4 threads={cpus} out={out}".format(
                 prog,
                 ref=reference,
                 split_f=self.split_f,
@@ -195,11 +200,33 @@ class QueryMapper(object):
         else:
             return out
 
+    def run_bowtie2(self, reference, out):
+
+        # build an index
+        cmd = "bowtie2-build {ref} {out}".format(ref=reference, out=out)
+
+        code = subprocess.call(cmd + " >/dev/null 2>>bowtie2.err", shell=True)         # dangerous way
+
+        # map
+        cmd = "bowtie2 -D 20 -R 3 -N 1 -L 20 --local -f -a -x {out} -S {out} -U {split_f}".format(out=out, split_f=self.split_f)
+
+        code = subprocess.call(cmd + " >/dev/null 2>>bowtie2.err", shell=True)         # dangerous way
+
+        return out
+
+    def run_bwa(self, reference, out):
+        cmd = "bwa index {ref} -p {out}".format(ref=reference, out=out)
+        code = subprocess.call(cmd + " 2>>bwa.err", shell=True)         # dangerous way
+        cmd = "bwa mem {out} {split_f} > {out}".format(out=out, split_f=self.split_f)
+        code = subprocess.call(cmd + " 2>>bwa.err", shell=True)         # dangerous way
+
+        return out
+
     @staticmethod
     def parse_SAM_file(sam_f):
         """ Yields SamRecords that meet some minimum criteria"""
         with open(sam_f, 'r') as IN:
-            for record in samparser.parse(IN, mapq=0, aligned_only=True):
+            for record in samparser.parse(IN, mapq=0, aligned_only=True, local=True):
                 yield record
 
 
@@ -494,8 +521,8 @@ class AlignedAmplicon(object):
         min_distance = 99999
 
         # calculate the distance using lower triangular algorithm
-        print()
-        print()
+        #print()
+        #print()
         #print("Here1")
         seqs = self.msa[:, start:end]
         no_dist = []
@@ -536,22 +563,22 @@ class AlignedAmplicon(object):
 
                         # check exactly what the additional group should be
                         if s1_group and s2_group is None:
-                            print("h1")
+                            #print("h1")
                             s1_group.append(seq2.description)
                             new_no_dist.append(s1_group)
                         elif s1_group is None and s2_group:
-                            print("h2")
+                            #print("h2")
                             s2_group.append(seq1.description)
                             new_no_dist.append(s2_group)
                         elif s1_group and s2_group:
                             # check if it is the same group
                             if s1_group is s2_group:
                                 continue
-                            print("h3")
+                            #print("h3")
                             group = set(s1_group + s2_group)
                             new_no_dist.append(list(group))
                         else:       # neither is in a group
-                            print("h4")
+                            #print("h4")
                             new_no_dist.append([seq1.description, seq2.description])
                         
                         no_dist = new_no_dist
@@ -945,12 +972,17 @@ def main(args):
     if len(amplicons) < 15:
         LOG.info("Low number of potential amplicons detected (of {} total), printing some statistics.".format(total_amplicons))
         num_failed_per_genome = {}
+        per_genome_lone_failed = {}
         num_failing_genomes = {}
+        
         for amp in failed_amplicons:
             for genome in failed_amplicons[amp]:
                 num_failed_per_genome[genome] = num_failed_per_genome.get(genome, 0) + 1
 
             num_failing_genomes[len(failed_amplicons[amp])] = num_failing_genomes.get(len(failed_amplicons[amp]), 0) + 1
+
+            if len(failed_amplicons[amp]) == 1:
+                per_genome_lone_failed[genome] = per_genome_lone_failed.get(genome, 0) + 1
 
         # print the stats
         LOG.info("Failing Amplicon Histogram:")
@@ -958,10 +990,15 @@ def main(args):
         for num in sorted(num_failing_genomes, reverse=True):
             LOG.info("  {num}\t{count}".format(num=num, count=num_failing_genomes[num]))
 
-        LOG.info("Failing Genome Histogram:")
+        LOG.info("Failing Genome Counts:")
         LOG.info("  genome\t# fail")
         for genome in sorted(num_failed_per_genome, key=lambda k: num_failed_per_genome[k], reverse=True):
             LOG.info("  {genome}\t{count}".format(genome=genome, count=num_failed_per_genome[genome]))
+
+        LOG.info("Lone Failing Genome Counts:")
+        LOG.info("  genome\t# fail")
+        for genome in sorted(per_genome_lone_failed, key=lambda k: per_genome_lone_failed[k], reverse=True):
+            LOG.info("  {genome}\t{count}".format(genome=genome, count=per_genome_lone_failed[genome]))
 
     if not amplicons:
         LOG.warning("Aborting due to lack of amplicons.")
