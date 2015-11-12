@@ -111,11 +111,18 @@ class QueryMapper(object):
                 # one another
                 leftovers = seq_len % self.split_len
                 extra_per = int(leftovers / int(seq_len / self.split_len)) + 1
-                split_len = self.split_len + extra_per
 
                 # split the sequence into chunks and write each to the split_f 
                 # prepending the split index to the header
-                for seq_indx in range(0, seq_len, split_len):
+                seq_indx = 0
+                while seq_indx < seq_len:
+                    # see if there are any leftovers remaining
+                    if leftovers:
+                        split_len = self.split_len + extra_per
+                        leftovers -= extra_per
+                    else:
+                        split_len = self.split_len
+     
                     # split out the seq
                     sp_seq = seq[seq_indx:seq_indx+split_len]
 
@@ -133,7 +140,7 @@ class QueryMapper(object):
                     self.aligns.append(Alignment(split_number, sp_seq_len))
 
                     split_number += 1
-
+                    seq_indx += split_len
       
     def run_bbmap(self, reference, out):
         """ 
