@@ -259,7 +259,7 @@ class Isolate(object):
             try:
                 self._extract_from_bundle("genome")
             except (MissingDataError, IOError) as e:
-                LOG.warning("Could extract 'genome' from 'bundle' for {}.\n\t{}".format(str(self), str(e)))
+                LOG.warning("Could not extract 'genome' from 'bundle' for {}.\n\t{}".format(str(self), str(e)))
 
             
         # data to download from JGI
@@ -344,6 +344,7 @@ class Isolate(object):
                 LOG.info("Copying {} to\t{}".format(src, dest))
                 try:
                     shutil.copy(src, dest)
+                    break
                 except Exception as e:
                     raise IOError("Copying {} to {} failed. {}".format(src, dest, str(e))) 
         else:
@@ -472,6 +473,7 @@ class IsolateManager(object):
         """ Reads a database into Isolate Objects """
         LOG.info("Reading database: {}...".format(self.database_path))
         df = pandas.read_csv(self.database_path, sep="\t")
+        df = df.where((pandas.notnull(df)), None)
         #df.fillna("NA", inplace=True)
 
         # check if the taxon_oid field in in the database
@@ -488,6 +490,8 @@ class IsolateManager(object):
 
     def get_missing(self):
         """ Returns a dict of missing files across all isolates """
+
+        all_data_paths = []
         missing_dict = {}
         for isolate in self.isolates.values():
             isolate_missing = isolate.get_missing()
@@ -562,7 +566,7 @@ class IsolateManager(object):
             for k, dk in metadata_to_database.items():
                 # skip if the key is already present and not empty and replace isn't specified
                 if dk in db_dict[index]:
-                    if db_dict[index][dk] and not replace:
+                    if db_dict[index][dk] is not None and not replace:
                         continue
                 
                 try:
