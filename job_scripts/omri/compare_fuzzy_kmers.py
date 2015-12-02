@@ -7,8 +7,9 @@ import time
 from mypyli import jellyfish
 import numpy as np
 import logging
+import re
 from Bio import SeqIO
-
+import queue
 import multiprocessing
 
 import matplotlib.pyplot as plt
@@ -22,15 +23,7 @@ LOG = logging.getLogger(__name__)
 LOG.setLevel("DEBUG")
 
 """
-Python allocates enough memory (28 bytes) in a standard int to hold 9 digits before it must be re allocated.
-
-So, it would be good to be able to index genome, contig, and kmer in just 9 digits.
-
-Want to allow 4 digits for genome index (each will be indexed as a number) to compare 1000+ genomes. 
-Want 4 more for contig (Hopefully there are no more than 1000 contigs...)
-Need to allow 8 digits for starting position to allow a 10Mb contig. 
-
-A string can allow all 3 of these with ; between for 67 bytes.
+TODO: I need to count reverse complemented kmers as well to make sure I find every match given that genome sequences may be reporting different strands.
 """
 
 
@@ -159,7 +152,7 @@ class KmerCounter(object):
                         if p.kmer_queue.qsize() > 10000:
                             time.sleep(2)
 
-                    print(kmers_counted)
+                    #print(kmers_counted)
 
         for p in self.partitions.values():
             p.kmer_queue.put("DUMP")
@@ -176,12 +169,24 @@ class KmerCounter(object):
         for p in self.partitions.values():
             p.kmer_queue.put("CONSERVED{}".format(num_genomes))
 
-        for p in self.partitions.values():
-            p.kmer_queue.close()
-            p.kmer_queue.join_thread()
-            p.join()
+        active_jobs = [p for p in self.partitions.values()]
+        while active_jobs:
+            try:
+                yield(self.results_queue.get(False))
+            except queue.Empty:
+                new_active_jobs = []
+                for job in active_jobs:
+                    if job.is_alive():
+                        new_active_jobs.append(job)
+                    else:
+                        #job.kmer_queue.join_thread()
+                        job.join()
+                        job.kmer_queue.close()
 
-            yield self.results_queue.get()
+                active_jobs = new_active_jobs
+                time.sleep(5)
+
+        LOG.debug("All threads joined!")
 
         self.results_queue.close()
 
@@ -242,13 +247,12 @@ class KmerPartition(multiprocessing.Process):
             else:
 
                 if itm == "DUMP":
-                    print("{} got dump command".format(self.name))
                     self.expand_and_update_kmer_file()
 
                 elif itm.startswith("CONSERVED"):
                     # split the number of genomes from the itm
                     self.get_conserved_kmers(int(itm.split("D")[1]))
-                    break
+                    return
 
         return
 
@@ -274,8 +278,13 @@ class KmerPartition(multiprocessing.Process):
             # might have something to do with the fact that some will be yielded and others will be returned
             yield "".join((current_seq, kmer))
             return
-        else:
+        
+        # skip if we are still in the stable start
+        elif len(current_seq) < self.stable_start:
+            pass
 
+        else:
+            
             # check if the current base can be fuzzy (not too many previous errors)
             if mismatches < self.mismatches:
                 # run the ambiguous result
@@ -393,8 +402,9 @@ class KmerPartition(multiprocessing.Process):
                         # if all genomes found add to list of conserved regions
                         conserved_kmers.append((kmer, locations))
 
-        print("Found {} conserved kmers".format(len(conserved_kmers)))
-        self.results_queue.put(conserved_kmers)
+        print("Found {} conserved kmers - {}".format(len(conserved_kmers), self.name))
+        for kmer in conserved_kmers:
+            self.results_queue.put(kmer)
         return conserved_kmers
 
 
@@ -421,18 +431,39 @@ class KmerPartition(multiprocessing.Process):
                     OUT.write(line + "\n")
                     continue
 
-                if kmer < stored_kmer:
-                    # write kmer and all expansions
+                
+                if kmer < stored_kmer:      # stored_kmer comes after this one, add new line
+                    # write kmer and all locations
                     line = "\t".join([str(kmer),"\t".join(self.kmers[kmer])])
 
-                elif kmer == stored_kmer:
+                elif kmer == stored_kmer:   # stored_kmer is this one, append to line
                     line = "\t".join([stored_line, "\t".join(self.kmers[kmer])])
                     stored_line = IN.readline()[:-1]
 
-                else:
+                else:   # stored_kmer is less than this one; need to read some more lines
                     # read in some more lines until the line is greater than 
                     line = stored_line
-                    stored_line = IN.readline()[:-1]
+                    while kmer > stored_kmer:
+                        stored_line = IN.readline()[:-1]
+
+                        # check for the end of the file and break if found
+                        if not stored_line:
+                            break
+
+                        OUT.write(line + "\n")
+                        stored_kmer = stored_line.split("\t")[0]
+
+                        if kmer == stored_kmer:
+                            line = "\t".join([stored_line, "\t".join(self.kmers[kmer])])
+                            stored_line = IN.readline()[:-1]
+                            # while loop will break at the end of this
+                        elif kmer < stored_kmer:    # we have overshot, add the kmer from memory
+                            line = "\t".join([str(kmer), "\t".join(self.kmers[kmer])])
+                            # while loop will break at the end of this
+
+                        else:   # there is still more looping over file needed to be done
+                            line = stored_line
+
 
                 OUT.write(line + "\n")
 
@@ -443,18 +474,29 @@ class KmerPartition(multiprocessing.Process):
 class Amplicon(object):
 
     existing_amplicons = {}    
+    amplicon_index = 0
 
     def __init__(self, name):
         self.name = name
         self.locations = []
 
+        Amplicon.amplicon_index += 1
+        self.index = Amplicon.amplicon_index
+
     @classmethod
     def from_kmer_pair(cls, k1, loc1, k2, loc2):
-        key = tuple(sorted((k1, k2)))
+        """ 
+        Originally, I used a sorted tuple as the key. But the I realized that order matters. 
+        
+        Reverse complements need to be taken care of in the counting step. 
+        """
+
+        key = (k1, k2)
         try:
+
             cls.existing_amplicons[key].add_new_location(loc1, loc2)
         except KeyError:
-            amp = cls("-".join((k1, k2)))
+            amp = cls("-".join(key))
             amp.add_new_location(loc1, loc2)
             cls.existing_amplicons[key] = amp
 
@@ -528,6 +570,205 @@ def _find_properly_spaced(queue, data_bin, k=20, max_dist=400, min_dist=100):
                 queue.put(((k1[0], loc1), (k2[0], loc2)))
 
 
+def write_all_amplicons(amplicons, fastas, k, out_dir):
+    """ 
+    TODO: Need to do something with kmers that are duplicated in a genome.
+
+    Maybe it would be best to take it into account in the stats section...
+
+    Also need to figure out why RC isn't working correctly. All strands ate +1
+    """
+
+    if os.path.isdir(out_dir):
+        raise ValueError("{} already exists, cowardly refusing to overwrite.".format(out_dir))
+    else:
+        os.mkdir(out_dir)
+
+    LOG.info("Making sequence shopping list...")
+    # make a hierarchial list of amplicons to get
+    num_amplicons = 0
+    genomes = {}
+    for amplicon in amplicons.values():
+        # skip singletons
+        if len(amplicon.locations) < 2:
+            continue
+        num_amplicons += 1
+        for location in amplicon.locations:
+            start, end = location
+
+            g, c, s1 = start.split(";")
+            _, _, s2 = end.split(";")
+
+            g = int(g)
+            c = int(c)
+            s1 = int(s1)
+            s2 = int(s2)
+
+            # there has GOT to be a better way to do this...
+            try:
+                genomes[g][c][(s1, s2)].append(amplicon)
+            except KeyError:
+                try:
+                    genomes[g][c][(s1, s2)] = [amplicon]
+                except KeyError:
+                    try:
+                        genomes[g][c] = {(s1, s2): [amplicon]}
+                    except KeyError:
+                        genomes[g] = {c: {(s1, s2): [amplicon]}}
+
+    LOG.info("Writting {} amplicon files...".format(num_amplicons))
+    written_files = []
+    for g_indx, fasta in enumerate(fastas, 1):
+        if g_indx in genomes:
+            with open(fasta) as IN:
+                fasta_name = os.path.splitext(os.path.basename(fasta))[0]
+                for c_indx, record in enumerate(SeqIO.parse(IN, "fasta"), 1):
+                    if c_indx in genomes[g_indx]:
+                        for location in genomes[g_indx][c_indx]:
+                            for amp in genomes[g_indx][c_indx][location]:
+                                out_path = "{}/{}_{}.fasta".format(out_dir, amp.index, amp.name)
+                                written_files.append(out_path)
+                                with open(out_path, 'a') as OUT:
+                                    # get start and end
+                                    if location[0] < location[1]:
+                                        start = location[0]
+                                        end = location[1]
+                                    else:
+                                        end = location[0]
+                                        start = location[1]
+
+                                    strand = 1
+
+                                    new_rec = record[start:end+k]
+                                    new_rec.id = "genome={g};contig={c};location=[{start}:{end}];strand={strand}".format(g=fasta_name, c=record.description, start=start, end=end, strand=strand)
+                                    new_rec.description = ""
+
+                                    SeqIO.write(new_rec, OUT, "fasta")
+
+    return written_files
+
+def get_amplicon_stats(amplicon_fastas, input_fastas, k):
+    
+    LOG.info("Calculating Amplicon stats...")
+
+    # make a list of fasta names to be used in the matrix
+    input_names = [os.path.splitext(os.path.basename(f))[0] for f in input_fastas]
+
+    amplicon_stats = {}
+    for fasta_f in amplicon_fastas:
+        fasta_name = os.path.splitext(os.path.basename(fasta_f))[0]
+        amplicon_stats[fasta_name] = {}
+
+        # get the number of Ns from the name
+        # fasta name will have the format $ampindx_$fwdprim-$revprim
+        primers = fasta_name.split("_")[1]
+        fwd_primer, rev_primer = primers.split("-")
+       
+        amplicon_stats[fasta_name]["fwd_N"] = str(fwd_primer.count("N"))
+        amplicon_stats[fasta_name]["rev_N"] = str(rev_primer.count("N"))
+
+
+        #
+        ## check which seqs can be told apart
+        #
+        seqs = {}
+        with open(fasta_f, 'r') as IN:
+            for record in SeqIO.parse(IN, "fasta"):
+                m = re.match(".*genome=(?P<genome>[^;]+).*strand=(?P<strand>[^;]+)", record.description)
+                genome = m.group("genome")
+                strand = m.group("strand")
+                
+                # store the amplified region (rc if necessary) 
+                if strand == "1":
+                    seq = record.seq[k:-k]
+                else:
+                    seq = record.seq[k:-k].reverse_complement()
+                
+                try:
+                    seqs[genome].append(seq)
+                except KeyError:
+                    seqs[genome] = [seq]
+
+        
+
+        # Seqs can have multiple locations in a single amplicon -- flatten these
+        flattened_seqs = {}
+        for genome in seqs:
+            for indx, seq in enumerate(seqs[genome]):
+                flattened_seqs[(genome, indx)] = seq
+        
+
+        # Assign cluster for each seq
+        cluster = 0
+        cluster_counts = {}
+        clusters = {}
+        for seq1 in flattened_seqs:
+
+            # skip seqs that already have cluster assigned
+            if seq1 in clusters:
+                continue
+            else:
+                cluster += 1
+                clusters[seq1] = str(cluster)
+                cluster_counts[cluster] = 1
+
+            for seq2 in flattened_seqs:
+                if seq1 is seq2:
+                    continue
+
+                # skip seqs that have already been processed
+                elif seq2 in clusters:
+                    continue
+
+                else:
+                    # check if the seqs are == 
+                    if flattened_seqs[seq1] == flattened_seqs[seq2]:
+                        clusters[seq2] = str(cluster)
+                        cluster_counts[cluster] += 1
+
+       
+        # group clusters back by genomes
+        duplicated_genomes = 0
+        unique_genomes = set()     
+        genome_clusters = {}
+        for key in clusters:
+            genome, index = key
+
+            cluster = clusters[key]
+
+            if cluster_counts[int(cluster)] == 1:
+                unique_genomes.add(genome)
+            try:
+                genome_clusters[genome].append(clusters[key])
+                duplicated_genomes += 1
+            except KeyError:
+                genome_clusters[genome] = [clusters[key]]
+           
+        amplicon_stats[fasta_name]["num_genomes"] = len(genome_clusters)
+        amplicon_stats[fasta_name]["num_unique"] = len(unique_genomes)
+        amplicon_stats[fasta_name]["num_duplicates"] = duplicated_genomes
+        amplicon_stats[fasta_name]["genome_clusters"] = genome_clusters
+
+    # sort the amplicons by num unique_genomes number (descending) and number of N's(ascending)
+    sorted_amplicons = sorted(amplicon_stats, key=lambda k: (-1 * amplicon_stats[k]["num_unique"], amplicon_stats[k]["fwd_N"] + amplicon_stats[k]["rev_N"]))
+
+
+    with open("amplicon_stats.txt", 'w') as STATS, open("amplicon_matrix.txt", 'w') as MATR:
+        # write headers to both files
+        STATS.write("\t".join(("amplicon", "num_genomes", "num_unique", "num_duplicates", "fwd_N", "rev_N")) + "\n")
+        MATR.write("\t".join(["amplicon"] + input_names) + "\n")
+
+        for amp in sorted_amplicons:
+            write_stats = [amp] + [str(amplicon_stats[amp][k]) for k in ["num_genomes", "num_unique", "num_duplicates", "fwd_N", "rev_N"]]
+            write_matr = [amp]
+            for name in input_names:
+                try:
+                    write_matr.append(";".join(amplicon_stats[amp]["genome_clusters"][name]))
+                except KeyError:
+                    write_matr.append("0")
+
+            STATS.write("\t".join(write_stats) + "\n")
+            MATR.write("\t".join(write_matr) + "\n")
 
 
 def main(fastas, k):
@@ -536,13 +777,13 @@ def main(fastas, k):
    
     # count kmers
     for fasta in fastas:
-        #kcounter.count_kmers_custom(fasta, 20)
-        pass
+        kcounter.count_kmers_custom(fasta, 20)
+        #pass
 
     # map the conserved kmers back to genomes
     conserved_kmers = []
-    for kmer_bundle in kcounter.get_conserved_kmers(len(fastas)):
-        conserved_kmers += kmer_bundle
+    for kmer in kcounter.get_conserved_kmers(len(fastas)):
+        conserved_kmers.append(kmer)
 
     # send kcounter for garbage collection
     del kcounter
@@ -558,6 +799,12 @@ def main(fastas, k):
 
     print("Properly spaced amplicons = {}".format(len(Amplicon.existing_amplicons)))
 
+    
+    written_files = write_all_amplicons(Amplicon.existing_amplicons, fastas, k, "amplicon_fastas")
+    
+    get_amplicon_stats(written_files, fastas, k)
+
+
     """
     All that is left to do is to make a table of which genomes have unique sequences for each amplicon.
 
@@ -571,6 +818,7 @@ def main(fastas, k):
     """
 
 
+    
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
