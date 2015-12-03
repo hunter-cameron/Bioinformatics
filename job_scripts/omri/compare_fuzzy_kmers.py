@@ -11,11 +11,11 @@ import re
 from Bio import SeqIO
 import queue
 import multiprocessing
+import psutil
+#import matplotlib.pyplot as plt
 
-import matplotlib.pyplot as plt
-
-from matplotlib import rcParams
-rcParams.update({'figure.autolayout': True})
+#from matplotlib import rcParams
+#rcParams.update({'figure.autolayout': True})
 
 
 logging.basicConfig()
@@ -23,11 +23,28 @@ LOG = logging.getLogger(__name__)
 LOG.setLevel("DEBUG")
 
 """
-TODO: I need to count reverse complemented kmers as well to make sure I find every match given that genome sequences may be reporting different strands.
+IDEA: I wonder if threads might be faster than multiprocessing because there is no need to pickle things when I can just use the shared memory.
+
+TODO: Multithread uniqueness finding portion.
+
+TODO: Find a way to reduce memory usage on counting (easy way might be to not store all possible mers at each position but only actual ones). 
+
+    - storing kmer keys as byte strings uses 53bytes of mem; strings use 69
+
+TODO: Something (main thread?) should watch memory to tell the partitions when to dump rather than them dumping at the end of each file. 
+
+
+TODO: Print some final stats about amplicons (number unique, etc).
+
+TODO: It would be great to be able to be able to load the indexes from a previous run to avoid having to recalculate them.
 """
 
 
 class KmerCounter(object):
+
+    # set max mem to 35G in mbytes
+    MAX_MEM = 35 * 2 ** 10
+
     def __init__(self, mismatches=1, stable_start=2, stable_end=2):
         self.mismatches = mismatches
 
@@ -147,10 +164,24 @@ class KmerCounter(object):
                 self.partitions[kmer[:self.stable_start]].kmer_queue.put((kmer, ";".join((gen_ctg_str, str(indx))))) 
 
                 if kmers_counted % 10000 == 0:
-                    # check if the queues are getting too big, wait if so
+                    # check if the queues are getting too big, or memory usage too high
                     for p in self.partitions.values():
                         if p.kmer_queue.qsize() > 10000:
                             time.sleep(2)
+
+                    # check memory usage
+                    main = psutil.Process(os.getpid())
+
+                    # get mem of main process in MB
+                    total_mem = main.get_memory_info()[0] / 2 ** 20
+                    for child in main.get_children():
+                        total_mem += child.get_memory_info()[0] / 2 ** 20
+
+                    # do an emergency dump if we are at 80% of max memory
+                    if total_mem >= .8 * self.MAX_MEM:
+                        for p in self.partitions.values():
+                            p.kmer_queue.put("DUMP")
+
 
                     #print(kmers_counted)
 
@@ -210,6 +241,7 @@ class KmerPartition(multiprocessing.Process):
     # binary here is merely idealistic because the binary gets converted to ints
     #encode_map = {"A": 0b00 "a": 0b00, "C": 0b01, "c": 0b01, "G": 0b10, "g": 0b10, "T": 0b11, "t":0b11}
     encode_map = {"A": "00", "C": "01", "G": "10", "T": "11"}
+    complement_map = {"A": "T", "T": "A", "G": "C", "C": "G"}
 
 
     def __init__(self, name, kmer_queue, results_queue):
@@ -303,9 +335,20 @@ class KmerPartition(multiprocessing.Process):
             #print(("result", result))
             yield result
 
+    @classmethod
+    def _reverse_complement(cls, kmer):
+        return ''.join([cls.complement_map[nt] for nt in reversed(kmer)])
+
     def add_kmer(self, kmer, payload=None):
-        """ Adds a kmer to the dict with a payload """
+        """ Adds a kmer and its reverse complement to the dict with a payload """
         for group in self._digest_kmer(kmer):
+            try:
+                self.kmers[group].append(payload)
+            except KeyError:
+                self.kmers[group] = [payload]
+
+        # add rev comp
+        for group in self._digest_kmer(self._reverse_complement(kmer)):
             try:
                 self.kmers[group].append(payload)
             except KeyError:
@@ -589,9 +632,15 @@ def write_all_amplicons(amplicons, fastas, k, out_dir):
     num_amplicons = 0
     genomes = {}
     for amplicon in amplicons.values():
-        # skip singletons
-        if len(amplicon.locations) < 2:
+        # make sure the amplicon represents more than one genome
+        genomes_represented = set()
+        for location in amplicon.locations:
+            genome = location[0].split(";", 1)[0]
+            genomes_represented.add(genome)
+
+        if len(genomes_represented) == 1:
             continue
+
         num_amplicons += 1
         for location in amplicon.locations:
             start, end = location
@@ -749,8 +798,8 @@ def get_amplicon_stats(amplicon_fastas, input_fastas, k):
         amplicon_stats[fasta_name]["num_duplicates"] = duplicated_genomes
         amplicon_stats[fasta_name]["genome_clusters"] = genome_clusters
 
-    # sort the amplicons by num unique_genomes number (descending) and number of N's(ascending)
-    sorted_amplicons = sorted(amplicon_stats, key=lambda k: (-1 * amplicon_stats[k]["num_unique"], amplicon_stats[k]["fwd_N"] + amplicon_stats[k]["rev_N"]))
+    # sort the amplicons by num unique_genomes number (descending) and number of N's(ascending), and then num duplicates
+    sorted_amplicons = sorted(amplicon_stats, key=lambda k: (-1 * amplicon_stats[k]["num_unique"], amplicon_stats[k]["fwd_N"] + amplicon_stats[k]["rev_N"], amplicon_stats[k]["num_duplicstes"]))
 
 
     with open("amplicon_stats.txt", 'w') as STATS, open("amplicon_matrix.txt", 'w') as MATR:
@@ -777,6 +826,7 @@ def main(fastas, k):
    
     # count kmers
     for fasta in fastas:
+        LOG.info("Indexing k-mers in {}".format(fasta))
         kcounter.count_kmers_custom(fasta, 20)
         #pass
 
