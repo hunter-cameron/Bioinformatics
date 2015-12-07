@@ -23,15 +23,17 @@ LOG = logging.getLogger(__name__)
 LOG.setLevel("DEBUG")
 
 """
+
 IDEA: I wonder if threads might be faster than multiprocessing because there is no need to pickle things when I can just use the shared memory.
 
 TODO: Multithread uniqueness finding portion.
 
-TODO: Find a way to reduce memory usage on counting (easy way might be to not store all possible mers at each position but only actual ones). 
+ISSUE: Generating the properly spaced amplicon list takes way too much memory for closely related genomes. (Over 100G for the Methylos)
+    
+    I think this is because each properly spaced pair is put in a directional hash
 
-    - storing kmer keys as byte strings uses 53bytes of mem; strings use 69
-
-TODO: Something (main thread?) should watch memory to tell the partitions when to dump rather than them dumping at the end of each file. 
+    The problem is the sheer number of potential amplicons. The number is well over 100million unique amplicons. 
+    This value seems to be after processing 215 of 1757 partitions.
 
 
 TODO: Print some final stats about amplicons (number unique, etc).
@@ -42,8 +44,10 @@ TODO: It would be great to be able to be able to load the indexes from a previou
 
 class KmerCounter(object):
 
-    # set max mem to 35G in mbytes
-    MAX_MEM = 35 * 2 ** 10
+    # set max mem to 38G in mbytes
+    MAX_MEM = 60 * 2 ** 10
+
+    COMPLEMENT_MAP = {"A": "T", "T": "A", "G": "C", "C": "G"}
 
     def __init__(self, mismatches=1, stable_start=2, stable_end=2):
         self.mismatches = mismatches
@@ -74,6 +78,11 @@ class KmerCounter(object):
                 for kmer in cls._recurse_all_kmers(k, curseq + nt, collected_seqs):
                     yield kmer
  
+    @classmethod
+    def _reverse_complement(cls, kmer):
+        return ''.join([cls.COMPLEMENT_MAP[nt] for nt in reversed(kmer)])
+
+
     def count_kmers(self, fasta_f, k):
         LOG.info("Counting {}-mers for {}".format(k, fasta_f))
 
@@ -138,8 +147,11 @@ class KmerCounter(object):
 
         for partition in self.partitions.values():
             partition.update_kmer_file()
-    
+
+
+
     def count_kmers_custom(self, fasta_f, k):
+        """ Count kmers and their reverse complements """
     
         self.genome_id += 1
         genome_str = str(self.genome_id)
@@ -149,7 +161,8 @@ class KmerCounter(object):
         contig_id = 0
         for seq in self._parse_fasta(fasta_f):
             contig_id += 1
-            gen_ctg_str = ";".join((genome_str, str(contig_id)))
+            contig_str = str(contig_id)
+            #gen_ctg_str = ";".join((genome_str, str(contig_id)))
 
             # count kmers in a sliding window
             # must add 1 to the length because range has an exclusive end
@@ -161,12 +174,24 @@ class KmerCounter(object):
                 if "N" in kmer:
                     continue
                
-                self.partitions[kmer[:self.stable_start]].kmer_queue.put((kmer, ";".join((gen_ctg_str, str(indx))))) 
+
+                # choose the < of the kmer and its RC
+                canonical = sorted((kmer, self._reverse_complement(kmer)))[0]
+        
+                # check if the rc was used and reindex if not
+                if canonical == kmer:
+                    strand = "1"
+            
+                else:
+                    strand = "-1"
+ 
+
+                self.partitions[canonical[:self.stable_start]].kmer_queue.put((canonical, ";".join((genome_str, contig_str, str(indx), strand))))
 
                 if kmers_counted % 10000 == 0:
                     # check if the queues are getting too big, or memory usage too high
                     for p in self.partitions.values():
-                        if p.kmer_queue.qsize() > 10000:
+                        if p.kmer_queue.qsize() > 1000:
                             time.sleep(2)
 
                     # check memory usage
@@ -174,15 +199,17 @@ class KmerCounter(object):
 
                     # get mem of main process in MB
                     total_mem = main.get_memory_info()[0] / 2 ** 20
-                    for child in main.get_children():
-                        total_mem += child.get_memory_info()[0] / 2 ** 20
+                    for partition in self.partitions.values():
+                        ps = psutil.Process(partition.pid)
+                        total_mem += ps.get_memory_info()[0] / 2 ** 20
 
-                    # do an emergency dump if we are at 80% of max memory
-                    if total_mem >= .8 * self.MAX_MEM:
+                    # do an emergency dump if we are at 60% of max memory
+                    # 60% because the writing to file step can add an extra 4% current mem per proc (16)
+                    # and we don't want to exceed max
+                    if total_mem >= .6 * self.MAX_MEM:
+                        LOG.info("Memory usage = {}G... doing emergency dump.".format(total_mem / 2 ** 10))
                         for p in self.partitions.values():
                             p.kmer_queue.put("DUMP")
-
-
                     #print(kmers_counted)
 
         for p in self.partitions.values():
@@ -241,7 +268,6 @@ class KmerPartition(multiprocessing.Process):
     # binary here is merely idealistic because the binary gets converted to ints
     #encode_map = {"A": 0b00 "a": 0b00, "C": 0b01, "c": 0b01, "G": 0b10, "g": 0b10, "T": 0b11, "t":0b11}
     encode_map = {"A": "00", "C": "01", "G": "10", "T": "11"}
-    complement_map = {"A": "T", "T": "A", "G": "C", "C": "G"}
 
 
     def __init__(self, name, kmer_queue, results_queue):
@@ -268,13 +294,13 @@ class KmerPartition(multiprocessing.Process):
 
 
     def run(self):
-        print("Starting thread {}".format(self.name)) 
+        LOG.debug("Starting thread {}".format(self.name)) 
         # wait for kmers to count
         while True:
             itm = self.kmer_queue.get()
 
             if type(itm) is tuple:
-                self.add_kmer(itm[0], itm[1])
+                self.add_kmer(kmer=itm[0], position=itm[1])
 
             else:
 
@@ -335,70 +361,21 @@ class KmerPartition(multiprocessing.Process):
             #print(("result", result))
             yield result
 
-    @classmethod
-    def _reverse_complement(cls, kmer):
-        return ''.join([cls.complement_map[nt] for nt in reversed(kmer)])
 
-    def add_kmer(self, kmer, payload=None):
-        """ Adds a kmer and its reverse complement to the dict with a payload """
+    def add_kmer(self, kmer, position):
+
         for group in self._digest_kmer(kmer):
             try:
-                self.kmers[group].append(payload)
+                self.kmers[group].append(position)
             except KeyError:
-                self.kmers[group] = [payload]
+                self.kmers[group] = [position]
 
-        # add rev comp
-        for group in self._digest_kmer(self._reverse_complement(kmer)):
-            try:
-                self.kmers[group].append(payload)
-            except KeyError:
-                self.kmers[group] = [payload]
-
-    def update_kmer_file(self):
-        """ Loads/creates a kmer file and writes all the current kmer information to it. """
-
-        LOG.debug("Updating kmer file for {}".format(self.file))
-
-        tmp_file = self.file + "_tmp"
-
-        # iterate through the input file and stored kmers and dump ordered results
-        with open(self.file, 'r') as IN, open(tmp_file, 'w') as OUT:
-
-            stored_line = IN.readline()[:-1]
-           
-
-            for kmer in sorted(self.kmers):
-                # make sure something is on the line; assume file over if not
-                if stored_line:
-                    #stored_kmer = int(stored_line.split("\t")[0])
-                    stored_kmer = stored_line.split("\t")[0]
-                else:
-                    line = "\t".join([str(kmer), "\t".join(self.kmers[kmer])])
-                    OUT.write(line + "\n")
-                    continue
-
-                if kmer < stored_kmer:
-                    # write kmer
-                    line = "\t".join([str(kmer),"\t".join(self.kmers[kmer])])
-                elif kmer == stored_kmer:
-                    line = "\t".join([stored_line, "\t".join(self.kmers[kmer])])
-                    stored_line = IN.readline()[:-1]
-
-                else:
-                    # read in some more lines until the line is greater than 
-                    line = stored_line
-                    stored_line = IN.readline()[:-1]
-
-                OUT.write(line + "\n")
-
-        os.rename(tmp_file, self.file)
-        self.kmers = {}
 
     ###
     # Checking analyzing stored files
     ###
     def get_conserved_kmers(self, num_genomes):
-        """ Look for kmers that have a position from each genomes """
+        """ Look for kmers that have a position from each genomes. """
        
         LOG.debug("Finding conserved kmers for {}...".format(self.name))
         conserved_kmers = []
@@ -419,6 +396,7 @@ class KmerPartition(multiprocessing.Process):
                     # now check that each genome is represented and build a location list
                     genomes_found = [False]*num_genomes
                     for location in locations:
+
                         try:
                             genome = int(location.split(";")[0]) - 1
                         except:
@@ -442,10 +420,14 @@ class KmerPartition(multiprocessing.Process):
                         except KeyError:
                             genomes_not_found[len(not_found)] = [kmer]
                     else:
-                        # if all genomes found add to list of conserved regions
-                        conserved_kmers.append((kmer, locations))
+                        # if all genomes found, convert location into object and add to list of conserved regions
+                        loc_objs = []
+                        for location in locations:
+                            genome, contig, start, strand = location.split(";")
+                            loc_objs.append(Location(genome, contig, start, strand))
+                        conserved_kmers.append((kmer, loc_objs))
 
-        print("Found {} conserved kmers - {}".format(len(conserved_kmers), self.name))
+        LOG.debug("Found {} conserved kmers - {}".format(len(conserved_kmers), self.name))
         for kmer in conserved_kmers:
             self.results_queue.put(kmer)
         return conserved_kmers
@@ -529,14 +511,12 @@ class Amplicon(object):
     @classmethod
     def from_kmer_pair(cls, k1, loc1, k2, loc2):
         """ 
-        Originally, I used a sorted tuple as the key. But the I realized that order matters. 
-        
-        Reverse complements need to be taken care of in the counting step. 
+        Collapse each kmer pair into a canonical representation.
+
         """
 
         key = (k1, k2)
         try:
-
             cls.existing_amplicons[key].add_new_location(loc1, loc2)
         except KeyError:
             amp = cls("-".join(key))
@@ -547,45 +527,71 @@ class Amplicon(object):
        self.locations.append((loc1, loc2))
 
 
+class Location(object):
+    """
+    A location of a kmer indexed by genome, contig, start, and strand 
+    
+    Uses slots to be a lightweight struct.
 
+    Fun fact, this is actually smaller than a tuple with the same info (this takes 72 bytes, tup is 80) according to sys.getsizeof()
+    """
+    #__slots__ = ["genome", "contig", "start", "strand"]
+
+    def __init__(self, genome, contig, start, strand):
+        self.genome = int(genome)
+        self.contig = int(contig)
+        self.start = int(start)
+        self.strand = int(strand)
 
 #
 ## Find kmers that are the right distance apart
 #
 def get_properly_spaced_pairs(conserved_kmers, k=20, max_dist=400, min_dist=100):
+
+    # build partitions by contig because we know that to be the right distance, it must be on the same contig
+    # this just reformats the data for a quicker searching algorithm
     ppp = {}
     for kmer, locations in conserved_kmers:
         for location in locations:
-            genome, contig, start = location.split(";")
             
             try:
-                ppp[(genome, contig)].append((kmer, genome, contig, start))
+                ppp[(location.genome, location.contig)].append((kmer, location))
             except KeyError:
-                ppp[(genome, contig)] = [(kmer, genome, contig, start)]
+                ppp[(location.genome, location.contig)] = [(kmer, location)]
 
     # this part could be split up over multiple processes
+    LOG.info("Processing {} conserved kmer partitions...".format(len(ppp)))
     results_queue = multiprocessing.Queue()
-    bins_processed = 0
+    bins_processed = 1
     for data_bin in ppp.values():
-        print("Processed {} bins".format(bins_processed))
+        LOG.debug("Processing bin {}...".format(bins_processed))
         bins_processed += 1
 
 
-        _find_properly_spaced(results_queue, data_bin, k, max_dist, min_dist)
-
+        for itm in _find_properly_spaced(results_queue, data_bin, k, max_dist, min_dist):
+            yield itm
+"""
     while True:
         if results_queue.qsize() > 0:
             yield results_queue.get()
 
         else:
             break
+"""
 
 def _find_properly_spaced(queue, data_bin, k=20, max_dist=400, min_dist=100):
+    """ 
+    Must look for the proper location.
+
+    Must also be on the same strand???
+    I think that's true but I should think about it more.
+    """
     # sort kmers by position
-    sorted_kmers = sorted(data_bin, key=lambda k: k[-1])
+    sorted_kmers = sorted(data_bin, key=lambda k: k[1].start)
 
-    print("# kmers: {}".format(len(sorted_kmers)))
+    #print("# kmers: {}".format(len(sorted_kmers)))
 
+    num_properly_spaced = 0
     for indx1, k1 in enumerate(sorted_kmers):
         # begin at the next kmer
         indx2 = indx1 + 1
@@ -593,8 +599,10 @@ def _find_properly_spaced(queue, data_bin, k=20, max_dist=400, min_dist=100):
             k2 = sorted_kmers[indx2]
             indx2 += 1
 
+            # Find distance between start of k2 and the end of k1 (interprimer distance)
             # locations are starting values so need to add k to k1 to get the end of it
-            distance = int(k2[-1]) - (int(k1[-1]) + k) 
+            # We know k2 is always >= k1 because we sorted it
+            distance = k2[1].start - (k1[1].start + k) 
 
             # break at first one that fails max dist test
             if distance > max_dist:
@@ -606,12 +614,17 @@ def _find_properly_spaced(queue, data_bin, k=20, max_dist=400, min_dist=100):
 
             # distance must be acceptable
             else:
-                loc1 = ";".join(k1[1:])
-                loc2 = ";".join(k2[1:])
 
-                # puts a tuple(first, second) of tuple(kmer, location)
-                queue.put(((k1[0], loc1), (k2[0], loc2)))
+                # make sure they are on the same strand
+                if k1[1].strand == k2[1].strand:
 
+                    # puts a tuple(first, second) of tuple(kmer, location)
+                    #queue.put((k1, k2))
+                    num_properly_spaced += 1
+                    yield (k1, k2)
+
+    LOG.debug("Found {} properly spaced pairs.".format(num_properly_spaced))
+    
 
 def write_all_amplicons(amplicons, fastas, k, out_dir):
     """ 
@@ -627,71 +640,73 @@ def write_all_amplicons(amplicons, fastas, k, out_dir):
     else:
         os.mkdir(out_dir)
 
+   
+    #
+    ## make a hierarchial list of amplicons to get to read each input FASTA once
+    #
     LOG.info("Making sequence shopping list...")
-    # make a hierarchial list of amplicons to get
     num_amplicons = 0
-    genomes = {}
+    shopping_list = {}
     for amplicon in amplicons.values():
         # make sure the amplicon represents more than one genome
+        # this is a pre-check for adding to the shopping list
         genomes_represented = set()
         for location in amplicon.locations:
-            genome = location[0].split(";", 1)[0]
-            genomes_represented.add(genome)
+            genomes_represented.add(location[0].genome)
 
         if len(genomes_represented) == 1:
             continue
 
+       
+        
         num_amplicons += 1
         for location in amplicon.locations:
-            start, end = location
-
-            g, c, s1 = start.split(";")
-            _, _, s2 = end.split(";")
-
-            g = int(g)
-            c = int(c)
-            s1 = int(s1)
-            s2 = int(s2)
+            first, second = location
 
             # there has GOT to be a better way to do this...
             try:
-                genomes[g][c][(s1, s2)].append(amplicon)
+                shopping_list[first.genome][first.contig][(first, second)].append(amplicon)
             except KeyError:
                 try:
-                    genomes[g][c][(s1, s2)] = [amplicon]
+                    shopping_list[first.genome][first.contig][(first, second)] = [amplicon]
                 except KeyError:
                     try:
-                        genomes[g][c] = {(s1, s2): [amplicon]}
+                        shopping_list[first.genome][first.contig] = {(first, second): [amplicon]}
                     except KeyError:
-                        genomes[g] = {c: {(s1, s2): [amplicon]}}
+                        shopping_list[first.genome] = {first.contig: {(first, second): [amplicon]}}
 
     LOG.info("Writting {} amplicon files...".format(num_amplicons))
     written_files = []
     for g_indx, fasta in enumerate(fastas, 1):
-        if g_indx in genomes:
+        if g_indx in shopping_list:
             with open(fasta) as IN:
                 fasta_name = os.path.splitext(os.path.basename(fasta))[0]
+
+                ### this part is getting down to a single region in the genome
                 for c_indx, record in enumerate(SeqIO.parse(IN, "fasta"), 1):
-                    if c_indx in genomes[g_indx]:
-                        for location in genomes[g_indx][c_indx]:
-                            for amp in genomes[g_indx][c_indx][location]:
+                    if c_indx in shopping_list[g_indx]:
+                        for location_pair in shopping_list[g_indx][c_indx]:
+                            first, second = location_pair
+
+                            # the current algorithm for finding amplicons ensures that position of first is always <= second, however, if it isn't the seq gotten from indexing will be blank (silently) so I want to make sure first is always before second
+                            assert(first.start < second.start)
+                            
+                            # reverse complement if on rev strand
+                            if first.strand == 1:
+                                new_rec = record[first.start:second.start+k]
+                            else:
+                                new_rec = record[first.start:second.start+k].reverse_complement()
+
+                            new_rec.id = "genome={f.genome};contig={f.contig};location=[{f.start}:{end}];strand={f.strand}".format(f=first, end=second.start + k)
+                            new_rec.description = ""
+
+
+
+                            ### this part is writing the region to each amplicon it is a part of
+                            for amp in shopping_list[g_indx][c_indx][location_pair]:
                                 out_path = "{}/{}_{}.fasta".format(out_dir, amp.index, amp.name)
                                 written_files.append(out_path)
                                 with open(out_path, 'a') as OUT:
-                                    # get start and end
-                                    if location[0] < location[1]:
-                                        start = location[0]
-                                        end = location[1]
-                                    else:
-                                        end = location[0]
-                                        start = location[1]
-
-                                    strand = 1
-
-                                    new_rec = record[start:end+k]
-                                    new_rec.id = "genome={g};contig={c};location=[{start}:{end}];strand={strand}".format(g=fasta_name, c=record.description, start=start, end=end, strand=strand)
-                                    new_rec.description = ""
-
                                     SeqIO.write(new_rec, OUT, "fasta")
 
     return written_files
@@ -799,7 +814,7 @@ def get_amplicon_stats(amplicon_fastas, input_fastas, k):
         amplicon_stats[fasta_name]["genome_clusters"] = genome_clusters
 
     # sort the amplicons by num unique_genomes number (descending) and number of N's(ascending), and then num duplicates
-    sorted_amplicons = sorted(amplicon_stats, key=lambda k: (-1 * amplicon_stats[k]["num_unique"], amplicon_stats[k]["fwd_N"] + amplicon_stats[k]["rev_N"], amplicon_stats[k]["num_duplicstes"]))
+    sorted_amplicons = sorted(amplicon_stats, key=lambda k: (-1 * amplicon_stats[k]["num_unique"], amplicon_stats[k]["fwd_N"] + amplicon_stats[k]["rev_N"], amplicon_stats[k]["num_duplicates"]))
 
 
     with open("amplicon_stats.txt", 'w') as STATS, open("amplicon_matrix.txt", 'w') as MATR:
@@ -820,6 +835,17 @@ def get_amplicon_stats(amplicon_fastas, input_fastas, k):
             MATR.write("\t".join(write_matr) + "\n")
 
 
+def get_memory_usage():
+    """ Returns the memory usage of this process and all children """
+    # check memory usage
+    main = psutil.Process(os.getpid())
+
+    total_mem = main.get_memory_info()[0] / 2 ** 30
+    for child in main.get_children():
+        total_mem += child.get_memory_info()[0] / 2 ** 30
+
+    return total_mem
+
 def main(fastas, k):
 
     kcounter = KmerCounter()
@@ -827,7 +853,7 @@ def main(fastas, k):
     # count kmers
     for fasta in fastas:
         LOG.info("Indexing k-mers in {}".format(fasta))
-        kcounter.count_kmers_custom(fasta, 20)
+        #kcounter.count_kmers_custom(fasta, 20)
         #pass
 
     # map the conserved kmers back to genomes
@@ -835,9 +861,19 @@ def main(fastas, k):
     for kmer in kcounter.get_conserved_kmers(len(fastas)):
         conserved_kmers.append(kmer)
 
+    LOG.info("Found {} fuzzy kmers conserved in all genomes.".format(len(conserved_kmers)))
+
     # send kcounter for garbage collection
     del kcounter
 
+
+    LOG.debug("Memory after kmer counting = {}G".format(get_memory_usage()))
+
+    #
+    ## Generate all properly spaced (same contig, strand, and within some distance) conserved kmer pairs
+    ## Put the properly spaced pairs in a data structure that doesn't care the order of the pairing (i.e. what strand the pair is found on per genome
+    #
+    LOG.info("Generating properly spaced amplicons...")
     for pair in get_properly_spaced_pairs(conserved_kmers):
         start, end = pair
 
@@ -846,8 +882,10 @@ def main(fastas, k):
 
         Amplicon.from_kmer_pair(s_kmer, s_loc, e_kmer, e_loc)
 
+        if len(Amplicon.existing_amplicons) % 100000 == 0:
+            LOG.debug("Memory after adding {} unique amplicons = {}G".format(len(Amplicon.existing_amplicons), get_memory_usage()))
 
-    print("Properly spaced amplicons = {}".format(len(Amplicon.existing_amplicons)))
+    print("Properly spaced amplicons for one or more genomes = {}".format(len(Amplicon.existing_amplicons)))
 
     
     written_files = write_all_amplicons(Amplicon.existing_amplicons, fastas, k, "amplicon_fastas")
