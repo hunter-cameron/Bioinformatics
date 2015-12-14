@@ -8,11 +8,15 @@ from mypyli import jellyfish
 import numpy as np
 import logging
 import re
+import pickle
 from Bio import SeqIO
 import queue
 import multiprocessing
 import psutil
 #import matplotlib.pyplot as plt
+
+import objgraph
+from pympler import tracker, muppy, summary
 
 #from matplotlib import rcParams
 #rcParams.update({'figure.autolayout': True})
@@ -24,17 +28,11 @@ LOG.setLevel("DEBUG")
 
 """
 
-IDEA: I wonder if threads might be faster than multiprocessing because there is no need to pickle things when I can just use the shared memory.
+TODO: Rewrite using sqlite. Should be faster and use less memory.
 
-TODO: Multithread uniqueness finding portion.
+TODO: The mergesort algorithm may be incorrect. For amplicons, it reports a correct number of locations but has more amplicons (not too many more)
 
-ISSUE: Generating the properly spaced amplicon list takes way too much memory for closely related genomes. (Over 100G for the Methylos)
-    
-    I think this is because each properly spaced pair is put in a directional hash
-
-    The problem is the sheer number of potential amplicons. The number is well over 100million unique amplicons. 
-    This value seems to be after processing 215 of 1757 partitions.
-
+    For Kmers, it reports less than half as many results (locations) though there were a consistent number (4911) kmers conserved between all genomes.
 
 TODO: Print some final stats about amplicons (number unique, etc).
 
@@ -230,7 +228,7 @@ class KmerCounter(object):
         active_jobs = [p for p in self.partitions.values()]
         while active_jobs:
             try:
-                yield(self.results_queue.get(False))
+                yield(self.results_queue.get(True, 5))
             except queue.Empty:
                 new_active_jobs = []
                 for job in active_jobs:
@@ -280,10 +278,6 @@ class KmerPartition(multiprocessing.Process):
         self.out_dir = "."
         self.file = "/".join([self.out_dir, self.name + "_data_dump.txt"])
         
-        if not os.path.isfile(self.file):
-            with open(self.file, 'w'):
-                pass
-
         # set up some vars to use later
         self.kmers = {}
     
@@ -305,7 +299,7 @@ class KmerPartition(multiprocessing.Process):
             else:
 
                 if itm == "DUMP":
-                    self.expand_and_update_kmer_file()
+                    self.update_kmer_file()
 
                 elif itm.startswith("CONSERVED"):
                     # split the number of genomes from the itm
@@ -496,9 +490,80 @@ class KmerPartition(multiprocessing.Process):
         self.kmers = {}
 
 
+    def merge_kmers_with_file(self, fh):
+        """ Yields lines to write to an output file """
+        kmer_itr = iter(sorted(self.kmers))
+        file_itr = iter(fh.readline, "")
+
+        kmer = next(kmer_itr)
+        line = next(file_itr)[:-1]
+    
+        while True:
+            if kmer < line.split("\t")[0]:
+                #print("<")
+                yield "\t".join([str(kmer),"\t".join(self.kmers[kmer])])
+
+                try:
+                    kmer = next(kmer_itr)
+                except StopIteration:
+                    # no more amps, yield the rest of the file
+                    yield line
+                    while True:
+                        yield next(file_itr)[:-1]
+
+            elif kmer == line.split("\t")[0]:
+                #print("=")
+                yield "\t".join([line, "\t".join(self.kmers[kmer])])
+
+                try:
+                    kmer = next(kmer_itr)
+                except StopIteration:
+                    # no more kmers, yield the rest of the file
+                    while True:
+                        yield next(file_itr)[:-1]
+
+                try:
+                    line = next(file_itr)[:-1]
+                except StopIteration:
+                    while True:
+                        kmer = next(kmer_itr)
+                        yield "\t".join([str(kmer),"\t".join(self.kmers[kmer])])
+
+            else:
+                #print(">")
+                yield line
+
+                try:
+                    line = next(file_itr)[:-1]
+                except StopIteration:
+                    yield "\t".join([str(kmer),"\t".join(self.kmers[kmer])])
+
+                    while True:
+                        kmer = next(kmer_itr)
+                        yield "\t".join([str(kmer),"\t".join(self.kmers[kmer])])
+
+    def update_kmer_file(self):
+
+        if os.path.isfile(self.file):
+            tmp_f = self.file + "_tmp"
+            with open(self.file, 'r') as IN, open(tmp_f, 'w') as OUT:
+                for line in self.merge_kmers_with_file(IN):
+                    #print((line,))
+                    #print()
+                    OUT.write(line + "\n")
+
+            os.rename(tmp_f, self.file)
+        else:
+            # file doesn't already exist just write all kmers
+            with open(self.file, 'w') as OUT:
+                for kmer in sorted(self.kmers):
+                    OUT.write("\t".join([str(kmer),"\t".join(self.kmers[kmer])]) + "\n")
+
+        self.kmers = {}
+
+
 class Amplicon(object):
 
-    existing_amplicons = {}    
     amplicon_index = 0
 
     def __init__(self, name):
@@ -508,22 +573,118 @@ class Amplicon(object):
         Amplicon.amplicon_index += 1
         self.index = Amplicon.amplicon_index
 
+    def __str__(self):
+        return self.name
+
+    def __cmp__(self, other):
+        return cmp(self.name, other.name)
+
+    def __lt__(self, other):
+        return self.name < other.name
+
+    def __eq__(self, other):
+        return self.name == other.name
+
+    def __gt__(self, other):
+        return self.name > other.name
+
+    def _get_stored_repr(self, base=None):
+        """ Generates a representation of the object that can be loaded later, optionally just adds locations to a base string """
+
+        if base is None:
+            #print(self.locations)
+            return "\t".join([self.name] + [":".join((str(loc1), str(loc2))) for loc1, loc2 in self.locations])
+        else:
+            #print(self.locations)
+            #print(base)
+            return "\t".join([base] + [":".join((str(loc1), str(loc2))) for loc1, loc2 in self.locations])
+
     @classmethod
-    def from_kmer_pair(cls, k1, loc1, k2, loc2):
-        """ 
-        Collapse each kmer pair into a canonical representation.
+    def from_stored_repr(cls, rep):
+        elems = rep.split("\t")
+        amp = cls(elems[0])
 
-        """
+        for loc in elems[1:]:
+            l1, l2 = loc.split(":")
 
-        key = (k1, k2)
-        try:
-            cls.existing_amplicons[key].add_new_location(loc1, loc2)
-        except KeyError:
-            amp = cls("-".join(key))
-            amp.add_new_location(loc1, loc2)
-            cls.existing_amplicons[key] = amp
+            amp.add_location_pair(Location.from_str(l1), Location.from_str(l2))
 
-    def add_new_location(self, loc1, loc2):
+        return amp
+
+    @classmethod
+    def merge_amplicons_with_file(cls, amps, fh):
+        """ Yields lines to write to an output file """
+        amp_itr = iter(amps)
+        file_itr = iter(fh.readline, "")
+
+        amp = next(amp_itr)
+        line = next(file_itr)[:-1]
+    
+        while True:
+            #print((amp.name, line.split("\t")[0]))
+            if amp.name < line.split("\t")[0]:
+                #print("<")
+                yield amp._get_stored_repr()
+
+                try:
+                    amp = next(amp_itr)
+                except StopIteration:
+                    # no more amps, yield the rest of the file
+                    yield line
+                    while True:
+                        yield next(file_itr)[:-1]
+
+            elif amp.name == line.split("\t")[0]:
+                #print("=")
+                yield amp._get_stored_repr(line)
+                try:
+                    amp = next(amp_itr)
+                except StopIteration:
+                    # no more amps, yield the rest of the file
+                    while True:
+                        yield next(file_itr)[:-1]
+
+                try:
+                    line = next(file_itr)[:-1]
+                except StopIteration:
+                    while True:
+                        yield next(amp_itr)._get_stored_repr()
+
+            else:
+                #print(">")
+                yield line
+
+                try:
+                    line = next(file_itr)[:-1]
+                except StopIteration:
+                    yield amp._get_stored_repr()
+                    while True:
+                        yield next(amp_itr)._get_stored_repr()
+
+    @classmethod
+    def update_amplicon_file(cls, amplicons, f):
+
+        if os.path.isfile(f):
+            tmp_f = f + "_tmp"
+            with open(f, 'r') as IN, open(tmp_f, 'w') as OUT:
+                for line in cls.merge_amplicons_with_file(sorted(amplicons), IN):
+                    #print(line)
+                    #print()
+                    OUT.write(line + "\n")
+
+            os.rename(tmp_f, f)
+        else:
+            # file doesn't already exist just write all amplicons
+            with open(f, 'w') as OUT:
+                for amp in sorted(amplicons):
+                    OUT.write(amp._get_stored_repr() + "\n")
+
+            
+    def update(self, other):
+        """ Updates an amplicon with more locations """
+        self.locations = self.locations + other.locations
+
+    def add_location_pair(self, loc1, loc2):
        self.locations.append((loc1, loc2))
 
 
@@ -543,9 +704,21 @@ class Location(object):
         self.start = int(start)
         self.strand = int(strand)
 
+    @classmethod
+    def from_str(cls, string):
+        """ Returns a location object from a ';' sparated string representation """
+        genome, contig, start, strand = string.split(";")
+        return Location(genome, contig, start, strand)
+    
+    def __str__(self):
+        return ";".join((str(self.genome), str(self.contig), str(self.start), str(self.strand)))
+
 #
 ## Find kmers that are the right distance apart
 #
+
+
+
 def get_properly_spaced_pairs(conserved_kmers, k=20, max_dist=400, min_dist=100):
 
     # build partitions by contig because we know that to be the right distance, it must be on the same contig
@@ -578,6 +751,513 @@ def get_properly_spaced_pairs(conserved_kmers, k=20, max_dist=400, min_dist=100)
         else:
             break
 """
+
+class AmpliconFinder(object):
+    """ Organizes all the code associated with going from a list of conserved kmers to a finished product of amplicons """
+
+    def __init__(self, threads=7, k=20, max_dist=400, min_dist=100, max_mem=60):
+        self.threads = threads
+        self.k = k
+        self.max_dist = max_dist
+        self.min_dist = min_dist
+
+        # attributes to be set later
+        self.worker_pool = None
+
+
+    def create_worker_pool(self):
+        """ Makes a worker pool before loading all conserved kmers into memory so the conserved kmers are not duplicated. """
+        self.worker_pool = multiprocessing.Pool(self.threads, self.worker_get_properly_spaced, (self,)) 
+
+        # we can go ahead and close it because we are communicating with queues not tasks
+        self.worker_pool.close()
+
+        
+    def find_kmer_pairs(conserved_kmers):
+        """ 
+        Writes a file of potential amplicons and returns the path to it. 
+    
+        Decides whether it would be best to look for amplicons that include all genomes or amplicons that include some minimum number of genomes.
+        """
+
+        if len(conserved_kmers) > 500:
+            # want to do the limited search
+            pass
+        else:
+            # want to do the full search
+            pass
+
+    def _find_kmer_pairs_in_all(conserved_kmers):
+        """ Branch of find_kmer_pairs that looks for kmers that are present in all genomes """
+        pass
+
+    def _find_kmer_pairs_in_genomes(conserved_kmers, min_number_genomes):
+        """ 
+        Branch of find_kmer_pairs that looks for kmers that are present in some number of genomes.
+        
+        The Problem:
+
+        Given a set of kmers with at least one location in each genome, find all possible kmer pairs that are spaced the proper distance apart in at least N genomes. 
+
+        ===============
+        Naiive Solution:
+
+        All-by-all pair each kmer with each other kmer and count how many genomes have properly spaced locations. Compare this count to N.
+
+        This will not work because sometimes genome sets have several million conserved kmers (resulting in more than 1 trillion pairwise comparisons.
+
+        =============
+        Optimizations:
+
+        1. Can take advantage of small proper distance window by sorting kmers and comparing each kmer to those kmers located within a proper window. This allows me to compare each kmer to at most 300 (400 max range, 100 min range) * all possible N variants
+
+        2. Can stop looking when # properly spaced genomes + # remaining genomes < # genomes required
+
+        ========
+        Strategy:
+
+        Current:
+        1. Split kmers into locations per contigs
+        2. Send contigs to threads and threads return good hits
+        3. Make good hits into amplicons and write to file when mem usage too high
+
+
+        Alternate:
+        1. Split kmers into their locations per genome (and per contig just to save a step later)
+        2. Give dict of locations corresponding to a genome to each thread
+        3. Each thread calculates all properly spaced pairs and writes to a file (some sort of memory monitoring should occur, either by main or each thread should be assigned memory)
+        4. Multi-file merge sort into a single file
+
+        This schema has the advantage that intermittant writting to disk is done threadded and also main is not a big relay system that all threads must pass through. Also, each result need not be pickled to be put in a queue.
+
+        This schema will be much faster iff the main thread is the primary limiting factor. (I suspect it is) 
+
+        ---- Neither of these take advantage of Optimization #2.
+
+
+        To use optimization 2, we have to be kmer focused rather than genome focused because we need to be able to know how many genomes have that kmer pair in a proper spacing.
+
+        Op2 Solution:
+        1. Main thread iterates over all kmer pairs and puts them in a queue.
+        2. Workers put only ones that pass in an output queue
+
+        This takes no advantage of Op1 -- which may end up being the one that saves more comparisons.
+
+        """
+        pass
+
+
+def create_worker_pool(threads, input_queue, output_queue, k, max_dist, min_dist):
+    """ Makes a worker pool before loading all conserved kmers into memory so the conserved kmers are not duplicated. """
+    pool = multiprocessing.Pool(threads, worker_get_properly_spaced, (input_queue, output_queue, k, max_dist, min_dist)) 
+    pool.close()
+
+    return pool
+
+
+def pooled_find_kmer_pairs(pool, conserved_kmers, input_queue, output_queue, threads, max_mem=60):
+    """ Even after dumping, memory usage doesn't go down as much as it should """
+
+    # build partitions by contig because we know that to be the right distance, it must be on the same contig
+    # this just reformats the data for a quicker searching algorithm
+    #objgraph.show_growth()
+    ppp = {}
+    for kmer, locations in conserved_kmers:
+        for location in locations:
+            
+            try:
+                ppp[(location.genome, location.contig)].append((kmer, location))
+            except KeyError:
+                ppp[(location.genome, location.contig)] = [(kmer, location)]
+
+    # add a start tag to the queue
+    for _ in range(threads):
+        input_queue.put("START")
+
+    # add all bins to the queue
+    for data_bin in ppp.values():
+        input_queue.put(data_bin)
+
+
+    LOG.info("Processing {} conserved kmer partitions...".format(len(ppp)))
+    #tr.print_diff()
+
+    # get all the results
+    results_processed = 0
+    amplicons = {}
+    num_finished = 0
+    while True:
+
+        # check memory every so often and dump if necessary
+        if results_processed != 0 and results_processed % 500000 == 0:
+            #LOG.debug("{}G memory used.".format(get_memory_usage()))
+            if get_memory_usage() >= .7 * max_mem:
+                LOG.debug("{}G memory used ({} results processed) -- Dumping amplicons to file.".format(get_memory_usage(True), results_processed)) 
+                Amplicon.update_amplicon_file(list(amplicons.values()), "amplicons_data_dump.txt")
+                amplicons = {}
+
+                #objgraph.show_growth()
+                #tr.print_diff()
+
+                LOG.debug("{}G memory used after dumping.".format(get_memory_usage()))
+
+            LOG.info("{} partitions remaining".format(input_queue.qsize()))
+
+        # get a result from the queue waiting up to 5 seconds
+        try:
+            result = output_queue.get(True, 5)
+        except queue.Empty:
+            if num_finished == threads:
+                LOG.debug("All threads done. Joining.")
+                # Try to join the threads
+                pool.join()
+                LOG.debug("{} Results (locations) processed.".format(results_processed))
+                break
+            else:
+                continue
+                
+            # need some sort of check if the work is done before exiting
+
+        if result == "FINISHED":
+            num_finished += 1
+            continue
+
+        key, loc1, loc2 = result
+
+        try:
+            amplicons[key].add_location_pair(loc1, loc2)
+        except KeyError:
+            amp = Amplicon(key)
+            amp.add_location_pair(loc1, loc2)
+            amplicons[key] = amp
+        
+        results_processed += 1
+
+    # final pickle
+    Amplicon.update_amplicon_file(list(amplicons.values()), "amplicons_data_dump.txt")
+
+    return "amplicons_data_dump.txt"
+
+def pooled_get_properly_spaced_pairs(conserved_kmers, k=20, max_dist=400, min_dist=100, max_mem=60):
+
+    # build partitions by contig because we know that to be the right distance, it must be on the same contig
+    # this just reformats the data for a quicker searching algorithm
+    #objgraph.show_growth()
+    ppp = {}
+    for kmer, locations in conserved_kmers:
+        for location in locations:
+            
+            try:
+                ppp[(location.genome, location.contig)].append((kmer, location))
+            except KeyError:
+                ppp[(location.genome, location.contig)] = [(kmer, location)]
+
+    
+    # make queue and add all entries to it
+    input_queue = multiprocessing.Queue()
+    for data_bin in ppp.values():
+        input_queue.put(data_bin)
+
+
+    LOG.debug("Calculating memory.")
+    objs = muppy.get_objects()
+    sum1 = summary.summarize(objs)
+    summary.print_(sum1)
+
+    LOG.debug("Done calculating memory.")
+
+    print(dir())
+
+
+    sys.exit()
+
+
+    output_queue = multiprocessing.Queue(10000)
+    threads = 7
+    pool = multiprocessing.Pool(threads, worker_get_properly_spaced, (input_queue, output_queue, k, max_dist, min_dist)) 
+    pool.close()
+
+    LOG.info("Processing {} conserved kmer partitions...".format(len(ppp)))
+    #tr.print_diff()
+
+    # get all the results
+    results_processed = 0
+    amplicons = {}
+    num_finished = 0
+    while True:
+
+        # check memory every so often and dump if necessary
+        if results_processed != 0 and results_processed % 100000 == 0:
+            #LOG.debug("{}G memory used.".format(get_memory_usage()))
+            if get_memory_usage() >= .7 * max_mem:
+                LOG.debug("{}G memory used ({} results processed) -- Dumping amplicons to file.".format(get_memory_usage(), results_processed)) 
+                Amplicon.update_amplicon_file(list(amplicons.values()), "amplicons_data_dump.txt")
+                amplicons = {}
+
+                #objgraph.show_growth()
+                #tr.print_diff()
+
+                LOG.debug("{}G memory used after dumping.".format(get_memory_usage()))
+
+            LOG.info("{} partitions remaining".format(input_queue.qsize()))
+
+        # get a result from the queue waiting up to 5 seconds
+        try:
+            result = output_queue.get(True, 5)
+        except queue.Empty:
+            if num_finished == threads:
+                LOG.debug("All threads done. Joining.")
+                # Try to join the threads
+                pool.join()
+                LOG.debug("{} Results (locations) processed.".format(results_processed))
+                break
+            else:
+                continue
+                
+            # need some sort of check if the work is done before exiting
+
+        if result == "FINISHED":
+            num_finished += 1
+            continue
+
+        key, loc1, loc2 = result
+
+        try:
+            amplicons[key].add_location_pair(loc1, loc2)
+        except KeyError:
+            amp = Amplicon(key)
+            amp.add_location_pair(loc1, loc2)
+            amplicons[key] = amp
+        
+        results_processed += 1
+
+    # final pickle
+    Amplicon.update_amplicon_file(list(amplicons.values()), "amplicons_data_dump.txt")
+
+    return "amplicons_data_dump.txt"
+
+
+def pooled_get_properly_spaced_pairs_option(conserved_kmers, k=20, max_dist=400, min_dist=100, max_mem=60):
+
+    # build partitions by contig because we know that to be the right distance, it must be on the same contig
+    # this just reformats the data for a quicker searching algorithm
+    #objgraph.show_growth()
+    ppp = {}
+    for kmer, locations in conserved_kmers:
+        for location in locations:
+            
+            try:
+                ppp[(location.genome, location.contig)].append((kmer, location))
+            except KeyError:
+                ppp[(location.genome, location.contig)] = [(kmer, location)]
+
+    
+    # make queue and add all entries to it
+    input_queue = multiprocessing.Queue()
+    for data_bin in ppp.values():
+        input_queue.put(data_bin)
+
+
+    LOG.debug("Calculating memory.")
+    objs = muppy.get_objects()
+    sum1 = summary.summarize(objs)
+    summary.print_(sum1)
+
+    LOG.debug("Done calculating memory.")
+
+    print(dir())
+
+
+    sys.exit()
+
+
+    output_queue = multiprocessing.Queue(10000)
+    threads = 7
+    pool = multiprocessing.Pool(threads, worker_get_properly_spaced, (input_queue, output_queue, k, max_dist, min_dist)) 
+    pool.close()
+
+    LOG.info("Processing {} conserved kmer partitions...".format(len(ppp)))
+    #tr.print_diff()
+
+    # get all the results
+    results_processed = 0
+    amplicons = {}
+    num_finished = 0
+    while True:
+
+        # check memory every so often and dump if necessary
+        if results_processed != 0 and results_processed % 100000 == 0:
+            #LOG.debug("{}G memory used.".format(get_memory_usage()))
+            if get_memory_usage() >= .7 * max_mem:
+                LOG.debug("{}G memory used ({} results processed) -- Dumping amplicons to file.".format(get_memory_usage(), results_processed)) 
+                Amplicon.update_amplicon_file(list(amplicons.values()), "amplicons_data_dump.txt")
+                amplicons = {}
+
+                #objgraph.show_growth()
+                #tr.print_diff()
+
+                LOG.debug("{}G memory used after dumping.".format(get_memory_usage()))
+
+            LOG.info("{} partitions remaining".format(input_queue.qsize()))
+
+        # get a result from the queue waiting up to 5 seconds
+        try:
+            result = output_queue.get(True, 5)
+        except queue.Empty:
+            if num_finished == threads:
+                LOG.debug("All threads done. Joining.")
+                # Try to join the threads
+                pool.join()
+                LOG.debug("{} Results (locations) processed.".format(results_processed))
+                break
+            else:
+                continue
+                
+            # need some sort of check if the work is done before exiting
+
+        if result == "FINISHED":
+            num_finished += 1
+            continue
+
+        key, loc1, loc2 = result
+
+        try:
+            amplicons[key].add_location_pair(loc1, loc2)
+        except KeyError:
+            amp = Amplicon(key)
+            amp.add_location_pair(loc1, loc2)
+            amplicons[key] = amp
+        
+        results_processed += 1
+
+    # final pickle
+    Amplicon.update_amplicon_file(list(amplicons.values()), "amplicons_data_dump.txt")
+
+    return "amplicons_data_dump.txt"
+
+
+def worker_get_properly_spaced(input_queue, output_queue, k, max_dist, min_dist):
+
+    start_signal = input_queue.get(True)
+    if start_signal == "START":
+        # short sleep to reduce the risk off this process getting another process' start signal
+        time.sleep(3)
+    else:
+        raise ValueError("Data received before START signal. Possibly because of race condition.")
+
+    while True:
+        # get partitions from queue until it is empty then break
+        try:
+            data_bin = input_queue.get(True, 5)
+        except queue.Empty:
+            output_queue.put("FINISHED")
+            break
+
+        # sort kmers by position
+        sorted_kmers = sorted(data_bin, key=lambda k: k[1].start)
+
+        #print("# kmers: {}".format(len(sorted_kmers)))
+
+        num_properly_spaced = 0
+        for indx1, k1 in enumerate(sorted_kmers):
+            # begin at the next kmer
+            indx2 = indx1 + 1
+            while indx2 < len(sorted_kmers):
+                k2 = sorted_kmers[indx2]
+                indx2 += 1
+
+                # Find distance between start of k2 and the end of k1 (interprimer distance)
+                # locations are starting values so need to add k to k1 to get the end of it
+                # We know k2 is always >= k1 because we sorted it
+                distance = k2[1].start - (k1[1].start + k) 
+
+                # break at first one that fails max dist test
+                if distance > max_dist:
+                    break
+
+                # skip if the distance is too small
+                elif distance < min_dist:
+                    continue
+
+                # distance must be acceptable
+                else:
+
+                    # make sure they are on the same strand
+                    if k1[1].strand == k2[1].strand:
+
+                        key = "-".join(sorted((k1[0], k2[0])))
+                        # puts a tuple of (key, loc1, loc2)
+                        output_queue.put((key, k1[1], k2[1]))
+
+def worker_get_properly_spaced_options(input_queue, output_queue, k, max_dist, min_dist):
+    """ Worker thread that gets told if it should look for kmers amplicons present in ANY genome or only amplicons present in ALL genomes """
+
+    method = input_queue.get(True)
+    if method == "START_ALL" or method == "START_ANY":
+        # short sleep to reduce the risk off this process getting another process' start signal
+        time.sleep(3)
+    else:
+        raise ValueError("Data received before START signal. Possibly because of race condition.")
+
+    while True:
+        # get partitions from queue until it is empty then break
+        try:
+            data_bin = input_queue.get(True, 5)
+        except queue.Empty:
+            output_queue.put("FINISHED")
+            break
+
+
+        # Start looking for kmers that are present in ALL genomes
+        # data_bin for this will be a kmer object 
+        if method == "START_ALL":
+            pass
+
+
+
+
+
+
+
+
+
+
+
+        # sort kmers by position
+        sorted_kmers = sorted(data_bin, key=lambda k: k[1].start)
+
+        #print("# kmers: {}".format(len(sorted_kmers)))
+
+        num_properly_spaced = 0
+        for indx1, k1 in enumerate(sorted_kmers):
+            # begin at the next kmer
+            indx2 = indx1 + 1
+            while indx2 < len(sorted_kmers):
+                k2 = sorted_kmers[indx2]
+                indx2 += 1
+
+                # Find distance between start of k2 and the end of k1 (interprimer distance)
+                # locations are starting values so need to add k to k1 to get the end of it
+                # We know k2 is always >= k1 because we sorted it
+                distance = k2[1].start - (k1[1].start + k) 
+
+                # break at first one that fails max dist test
+                if distance > max_dist:
+                    break
+
+                # skip if the distance is too small
+                elif distance < min_dist:
+                    continue
+
+                # distance must be acceptable
+                else:
+
+                    # make sure they are on the same strand
+                    if k1[1].strand == k2[1].strand:
+
+                        key = "-".join(sorted((k1[0], k2[0])))
+                        # puts a tuple of (key, loc1, loc2)
+                        output_queue.put((key, k1[1], k2[1]))
 
 def _find_properly_spaced(queue, data_bin, k=20, max_dist=400, min_dist=100):
     """ 
@@ -625,6 +1305,156 @@ def _find_properly_spaced(queue, data_bin, k=20, max_dist=400, min_dist=100):
 
     LOG.debug("Found {} properly spaced pairs.".format(num_properly_spaced))
     
+
+def write_amplicons_from_file(amplicon_f, fastas, k, out_dir, soft_limit=500, hard_limit=2000):
+    """ Uses heuristics to write a set number of ampliconsto fastas """
+    num_amplicons = 0
+    num_locations = 0
+    with open(amplicon_f, 'r') as IN:
+        for line in IN:
+            amp = Amplicon.from_stored_repr(line[:-1])
+
+            for location in amp.locations:
+                num_locations += 1
+
+            num_amplicons += 1
+
+    LOG.info("{} Total amplicons detected.".format(num_amplicons))
+    LOG.info("{} Total locations detected.".format(num_locations))
+
+
+    # shift to writing amplicons to file
+    if os.path.isdir(out_dir):
+        raise ValueError("{} already exists, cowardly refusing to overwrite.".format(out_dir))
+    else:
+        os.mkdir(out_dir)
+
+
+    num_genomes = len(fastas)
+
+    param_list = [
+            (num_genomes, 0, 0),    # perfect matches only
+            (num_genomes, 0),       # allow Ns in primer regions
+            (num_genomes),          # just require a seq from each genome present
+            (0),                    # require nothing
+            ]
+
+    # iterate over the parameters getting sets of amplicons
+    amplicons = []
+    hard_limit_omit = 0
+    for params in param_list:
+        for amp in subset_amplicon_file(amplicon_f, *params):
+
+            # check if amp already in amplicons
+            if amp in amplicons:
+                continue
+            else:
+                if len(amplicons) >= hard_limit:
+                    hard_limit_omit += 1
+                else:
+                    amplicons.append(amp)
+
+        if hard_limit_omit:
+            LOG.warning("Reached amplicon hard limit in the middle of a step. {} similar amplicons omitted.".format(hard_limit_omit))
+            break
+
+    LOG.info("Continuing processing with {} amplicons.".format(len(amplicons)))
+
+    LOG.info("Making sequence shopping list...")
+    shopping_list = {}
+    for amplicon in amplicons:
+        
+        for location in amplicon.locations:
+            first, second = location
+
+            # there has GOT to be a better way to do this...
+            try:
+                shopping_list[first.genome][first.contig][(first, second)].append(amplicon)
+            except KeyError:
+                try:
+                    shopping_list[first.genome][first.contig][(first, second)] = [amplicon]
+                except KeyError:
+                    try:
+                        shopping_list[first.genome][first.contig] = {(first, second): [amplicon]}
+                    except KeyError:
+                        shopping_list[first.genome] = {first.contig: {(first, second): [amplicon]}}
+
+    written_files = []
+    for g_indx, fasta in enumerate(fastas, 1):
+        if g_indx in shopping_list:
+            with open(fasta) as IN:
+                fasta_name = os.path.splitext(os.path.basename(fasta))[0]
+
+                ### this part is getting down to a single region in the genome
+                for c_indx, record in enumerate(SeqIO.parse(IN, "fasta"), 1):
+                    if c_indx in shopping_list[g_indx]:
+                        for location_pair in shopping_list[g_indx][c_indx]:
+                            first, second = location_pair
+
+                            # the current algorithm for finding amplicons ensures that position of first is always <= second, however, if it isn't the seq gotten from indexing will be blank (silently) so I want to make sure first is always before second
+                            assert(first.start < second.start)
+                            
+                            # reverse complement if on rev strand
+                            if first.strand == 1:
+                                new_rec = record[first.start:second.start+k]
+                            else:
+                                new_rec = record[first.start:second.start+k].reverse_complement()
+
+                            new_rec.id = "genome={f.genome};contig={f.contig};location=[{f.start}:{end}];strand={f.strand}".format(f=first, end=second.start + k)
+                            new_rec.description = ""
+
+
+
+                            ### this part is writing the region to each amplicon it is a part of
+                            for amp in shopping_list[g_indx][c_indx][location_pair]:
+                                out_path = "{}/{}_{}.fasta".format(out_dir, amp.index, amp.name)
+                                written_files.append(out_path)
+                                with open(out_path, 'a') as OUT:
+                                    SeqIO.write(new_rec, OUT, "fasta")
+
+    return written_files
+
+
+def subset_amplicon_file(amplicon_f, min_genomes=0, max_duplicates=99, max_Ns=99):
+    """ This could use to write unused amplicons to a file each time to narrow the search set with each iteration """
+    with open(amplicon_f, 'r') as IN:
+        for line in IN:
+            elems = line[:-1].split("\t")
+
+            #
+            ## Tests I can do before making the amplicon
+            #
+
+            # quick check if amp has enough entries to cover each genome
+            if len(elems) - 1 < min_genomes:
+                continue
+            
+            # check the number of Ns
+            if elems[0].count("N") > max_Ns:
+                continue
+
+
+            #
+            ## Tests after making the amplicon
+            #
+
+            # rigorous num genomes test
+            amplicon = Amplicon.from_stored_repr(line[:-1])
+            genomes_represented = set()
+            for location in amplicon.locations:
+                genomes_represented.add(location[0].genome)
+
+            if len(genomes_represented) < min_genomes:
+                continue
+
+            
+            # num duplicates test
+            num_duplicates = len(amplicon.locations) - len(genomes_represented)
+            if num_duplicates > max_duplicates:
+                continue
+
+            yield amplicon
+
 
 def write_all_amplicons(amplicons, fastas, k, out_dir):
     """ 
@@ -835,19 +1665,90 @@ def get_amplicon_stats(amplicon_fastas, input_fastas, k):
             MATR.write("\t".join(write_matr) + "\n")
 
 
-def get_memory_usage():
+def get_memory_usage(verbose=False):
     """ Returns the memory usage of this process and all children """
     # check memory usage
     main = psutil.Process(os.getpid())
 
     total_mem = main.get_memory_info()[0] / 2 ** 30
+    if verbose:
+        LOG.debug("Main mem = {}".format(total_mem))
     for child in main.get_children():
         total_mem += child.get_memory_info()[0] / 2 ** 30
+        if verbose:
+            LOG.debug("    Thread usage {}".format(child.get_memory_info()[0] / 2 ** 30))
 
     return total_mem
 
-def main(fastas, k):
 
+def test_amplicons():
+    k1 = ("AAAA-AAAA", Location(1, 1, 1, 1), Location(1, 1, 300, 1))
+    k2 = ("AAAA-AAAA", Location(1, 2, 1, 1), Location(1, 5, 300, 1))
+    k3 = ("CCCC-CCCC", Location(1, 3, 1, 1), Location(1, 2, 300, 1))
+    k4 = ("AAAA-AAAA", Location(1, 4, 1, 1), Location(1, 1, 300, 1))
+    k5 = ("GGGG-GGGG", Location(1, 5, 1, 1), Location(1, 1, 300, 1))
+
+    amplicons = {}
+
+    # add k1
+    amp1 = Amplicon(k1[0])
+    amp1.add_location_pair(k1[1], k1[2])
+    amplicons[k1[0]] = amp1
+
+    # add k2
+    amplicons[k2[0]].add_location_pair(k2[1], k2[2])
+
+    # add k3
+    amp = Amplicon(k3[0])
+    amp.add_location_pair(k3[1], k3[2])
+    amplicons[k3[0]] = amp
+
+    # dump to file
+    Amplicon.update_amplicon_file(list(amplicons.values()), "test_file")
+    amplicons = {}
+
+    # add k4
+    amp2 = Amplicon(k4[0])
+    amp2.add_location_pair(k4[1], k4[2])
+    amplicons[k4[0]] = amp2
+
+    # add k5
+    amp = Amplicon(k5[0])
+    amp.add_location_pair(k5[1], k5[2])
+    amplicons[k5[0]] = amp
+
+    Amplicon.update_amplicon_file(list(amplicons.values()), "test_file")
+
+
+    print("before update1")
+    for pair in amp1.locations:
+        print(pair[0].contig)
+
+    print("before update2")
+    for pair in amp2.locations:
+        print(pair[0].contig)
+
+
+
+    print("after update")
+    amp1.update(amp2)
+    for pair in amp1.locations:
+        print(pair[0].contig)
+
+    print("___________________________________")
+
+    # read the test_file
+    with open("test_file", 'rb') as IN:
+        while True:
+            amp = pickle.load(IN)
+            print((amp.name, amp.locations, len(amp.locations)))
+            for pair in amp.locations:
+                print(pair[0].contig)
+
+
+
+def main(fastas, k):
+    #test_amplicons()
     kcounter = KmerCounter()
    
     # count kmers
@@ -856,7 +1757,19 @@ def main(fastas, k):
         #kcounter.count_kmers_custom(fasta, 20)
         #pass
 
-    # map the conserved kmers back to genomes
+    LOG.debug("Memory after kmer counting = {}G".format(get_memory_usage()))
+
+    # spawn processes for amplicon finding before loading all the conserved kmers into memory 
+    input_queue = multiprocessing.Queue()
+    output_queue = multiprocessing.Queue(10000)
+    threads = 7
+    max_dist = 400
+    min_dist = 100
+    max_mem = 60
+    pool = create_worker_pool(threads, input_queue, output_queue, k, max_dist, min_dist)
+ 
+
+    # find conserved kmers
     conserved_kmers = []
     for kmer in kcounter.get_conserved_kmers(len(fastas)):
         conserved_kmers.append(kmer)
@@ -867,29 +1780,16 @@ def main(fastas, k):
     del kcounter
 
 
-    LOG.debug("Memory after kmer counting = {}G".format(get_memory_usage()))
-
     #
     ## Generate all properly spaced (same contig, strand, and within some distance) conserved kmer pairs
     ## Put the properly spaced pairs in a data structure that doesn't care the order of the pairing (i.e. what strand the pair is found on per genome
     #
-    LOG.info("Generating properly spaced amplicons...")
-    for pair in get_properly_spaced_pairs(conserved_kmers):
-        start, end = pair
 
-        s_kmer, s_loc = start
-        e_kmer, e_loc = end
+    amplicon_f = pooled_find_kmer_pairs(pool, conserved_kmers, input_queue, output_queue, threads, max_mem)
 
-        Amplicon.from_kmer_pair(s_kmer, s_loc, e_kmer, e_loc)
+    #written_files = write_all_amplicons(Amplicon.existing_amplicons, fastas, k, "amplicon_fastas")
+    written_files = write_amplicons_from_file(amplicon_f, fastas, k , "amplicon_fastas")
 
-        if len(Amplicon.existing_amplicons) % 100000 == 0:
-            LOG.debug("Memory after adding {} unique amplicons = {}G".format(len(Amplicon.existing_amplicons), get_memory_usage()))
-
-    print("Properly spaced amplicons for one or more genomes = {}".format(len(Amplicon.existing_amplicons)))
-
-    
-    written_files = write_all_amplicons(Amplicon.existing_amplicons, fastas, k, "amplicon_fastas")
-    
     get_amplicon_stats(written_files, fastas, k)
 
 
