@@ -13,6 +13,7 @@ from Bio import SeqIO
 import queue
 import multiprocessing
 import psutil
+import sqlite3
 #import matplotlib.pyplot as plt
 
 import objgraph
@@ -28,7 +29,7 @@ LOG.setLevel("DEBUG")
 
 """
 
-TODO: Rewrite using sqlite. Should be faster and use less memory.
+TODO: Rewrite using sqlite. Should be faster and use less memory. Basically, I have written a poor version of SQLite using my dumping method.
 
 TODO: The mergesort algorithm may be incorrect. For amplicons, it reports a correct number of locations but has more amplicons (not too many more)
 
@@ -39,6 +40,495 @@ TODO: Print some final stats about amplicons (number unique, etc).
 TODO: It would be great to be able to be able to load the indexes from a previous run to avoid having to recalculate them.
 """
 
+class KmerCounterSQL(object):
+
+
+    def __init__(self, database, k, threads, mismatches=1, stable_bp=2):
+        self.database_f = database
+        self.k = k
+        self.threads = threads
+        self.mismatches = mismatches
+
+        # stables are # bases at beginning and end that cannot be mismatches
+        self.stable_bp = stable_bp
+
+        # open/make the database
+        if os.path.isfile(self.database_f): 
+            self.open_database()
+        else:
+            self.open_database()
+            self.make_SQL_tables()
+
+    def open_database(self):
+        self.database = sqlite3.connect(self.database_f, check_same_thread=False)
+        self.dbc = self.database.cursor()
+
+    def make_SQL_tables(self):
+        """ Makes SQL tables corresponding to all the info I want """
+
+        # create table that holds the genome names
+        self.dbc.execute("""CREATE TABLE Genomes (
+                        id INTEGER PRIMARY KEY NOT NULL,
+                        name TEXT
+                        );
+                        """)
+
+        # create table that holds contigs
+        self.dbc.execute("""CREATE TABLE Contigs (
+                        id INTEGER PRIMARY KEY NOT NULL,
+                        name TEXT,
+                        genome INTEGER NOT NULL,
+                        FOREIGN KEY(genome) REFERENCES Genomes(id)
+                        );
+                        """)
+
+        # create table that holds all the unique Kmers that are stored in locations
+        # id is an integer that results from converting ACGT to base4 and then converting to base10
+        self.dbc.execute("""CREATE TABLE Kmers (
+                        id INTEGER PRIMARY KEY ON CONFLICT IGNORE NOT NULL,
+                        name TEXT
+                        );
+                        """)
+
+        # create table to hold each location (could add a genome field to make lookups ever easier)
+        self.dbc.execute("""CREATE TABLE Locations (
+                        id INTEGER PRIMARY KEY NOT NULL,
+                        contig INTEGER NOT NULL,
+                        start INTEGER,
+                        strand INTEGER,
+                        kmer INTEGER NOT NULL,
+                        FOREIGN KEY(contig) REFERENCES Contigs(id)
+                        FOREIGN KEY(kmer) REFERENCES Kmers(id)
+                        );
+                        """)
+
+        #
+        ## Create some tables to aid in calculation of conserved kmers
+        ## These tables will be populated after kmer counting
+        #
+
+        # create a table of fuzzy kmers 
+        self.dbc.execute("""CREATE TABLE FuzzyKmers (
+                        id INTEGER PRIMARY KEY ON CONFLICT IGNORE NOT NULL,
+                        name TEXT
+                        );
+                        """)
+
+        # create a many to many table that relates each kmer with all the fuzzy kmers it could be a part of
+        self.dbc.execute("""CREATE TABLE KmerToFuzzy (
+                        id INTEGER PRIMARY KEY NOT NULL,
+                        kmer INT,
+                        fuzzy INT,
+                        UNIQUE(kmer, fuzzy) ON CONFLICT IGNORE
+                        FOREIGN KEY(kmer) REFERENCES Kmers(id)
+                        FOREIGN KEY(fuzzy) REFERENCES FuzzyKmers(id)
+                        );
+                        """)
+
+    @classmethod
+    def _recurse_all_kmers(cls, k, curseq=""):
+        """ Generates all kmers to avoid having to store a large array """
+        if len(curseq) == k:
+            yield curseq
+        else:
+            for nt in ["A", "C", "G", "T"]:
+                for kmer in cls._recurse_all_kmers(k, curseq + nt):
+                    yield kmer
+ 
+
+    def count_kmers(self, fastas):
+        """
+        The counter here should do nothing but update the database.
+
+        In multiple other threads the counter should be running counting kmers and should return multiple lists of tuples. The first contains all the unique kmers that need to be in kmers and the second contains Locations for the counted segment.
+        """
+        input_queue = multiprocessing.Queue()
+        results_queue = multiprocessing.Queue(15)
+
+        # spawn workers
+        workers = []
+        for indx in range(self.threads):
+            worker = KCounter("Counter{}".format(indx), self.k, input_queue, results_queue)
+            worker.start()
+            workers.append(worker)
+
+        for fasta in fastas:
+            genome_name = os.path.splitext(os.path.basename(fasta))[0]
+
+            # check if genome is in database abd skip if so
+            if self.genome_in_database(genome_name):
+                LOG.info("Genome {} already found in database. Skipping.".format(genome_name))
+                continue
+            else:
+                LOG.info("Counting kmers for {}".format(genome_name))
+
+            # add fasta to the database and get the genome index
+            genome_id = self._add_genome(genome_name)
+
+            with open(fasta, 'r') as IN:
+                # keep track of how much goes in the pipeline so I'll know how much to expect out
+                num_batches = 0
+                for record in SeqIO.parse(IN, "fasta"):
+
+
+                    # add contig to the database and get the contig index
+                    contig_id = self._add_contig(record.description, genome_id)
+
+                    # split the sequence up into pieces and put the pieces into the input queue
+                    for indx in range(0, len(record.seq), 500000):
+                        input_queue.put((genome_id, contig_id, indx, str(record.seq[indx:indx+500000])))
+                        num_batches += 1
+
+
+            # get result batches 
+            for bat_num in range(num_batches):
+                LOG.debug("Getting batch {} of {}".format(bat_num+1, num_batches))
+                kmers, locations = results_queue.get()
+        
+                LOG.debug("Adding kmers to database.")
+                self._add_kmers(kmers)
+                LOG.debug("Adding locations to database.")
+                self._add_locations(locations)
+            self.database.commit()
+            print(self.database.total_changes)
+
+        for _ in workers:
+            input_queue.put("STOP")
+
+        for worker in workers:
+            LOG.debug("Waiting for {} to join...".format(worker.name))
+            worker.join()
+
+    #
+    ## Populating fuzzy kmer table
+    #
+    def generate_fuzzy_kmers(self):
+        """ Populates the FuzzyKmer and KmerToFuzzy tables 
+        
+        All kmers without entries in the fuzzy tables are queries and results are written to file
+        Then, file is iterated over in multiprocessing and batches of fuzzy entries are added to table.
+
+        I use this schema because SQL complains (and sometimes Segfaults) if any sqlite object (including a cursor) is used in a thread other than the originating thread)
+        """
+
+        # make a pool to process results
+        pool = multiprocessing.Pool(self.threads)
+
+        # select kmers that do not have an entry in the KmersToFuzzy table (ones that have not yet been processed)
+        LOG.info("Selecting kmers to fuzzify...")
+        cursor = self.dbc.execute("SELECT Kmers.id, Kmers.name from Kmers LEFT JOIN KmerToFuzzy ON kmers.id = KmerToFuzzy.kmer WHERE KmerToFuzzy.kmer is NULL")
+
+
+        # write results to a temporary file
+        # TODO Actually use the tmpfile module to generate this file
+        LOG.info("Writting kmers to a temporary file...")
+        with open("tmpkmer.dmp", "w") as OUT:
+            self._sql_results_to_file(OUT, cursor)
+
+        iter_fuzzy_kmers = pool.imap(self._generate_fuzzy_entries, self._iter_from_file("tmpkmer.dmp", 100000))
+
+        LOG.info("Fuzzifying and inserting fuzzy kmers into database...")
+        for fuzzy_kmers, links in iter_fuzzy_kmers:
+            LOG.debug("Inserting {} elements into FuzzyKmers...".format(len(fuzzy_kmers)))
+            self.dbc.executemany("INSERT OR IGNORE INTO FuzzyKmers (id, name) VALUES (?, ?)", fuzzy_kmers)
+            LOG.debug("Inserting {} elements into KmerToFuzzy...".format(len(links)))
+            self.dbc.executemany("INSERT INTO KmerToFuzzy (kmer, fuzzy) VALUES (?, ?)", links)
+
+        self.database.commit()
+        
+    def _generate_fuzzy_entries(self, kmers):
+        """ Takes an iterable of kmers (id, name) and returns a list of fuzzy kmers ready to be inserted into the FuzzyKmer table and a list of links between FuzzyKmers and real kmers"""
+
+        fuzzy_kmers = []
+        links = []
+        for kmer_id, kmer in kmers:
+            for fuzzy_kmer in self._fuzzify_kmer(kmer):
+                fuzzy_id_str = fuzzy_kmer.replace("A", "0").replace("C", "1").replace("G", "2").replace("T", "3").replace("N", "4")
+                fuzzy_id = int(fuzzy_id_str, 5)
+            
+                fuzzy_kmers.append((fuzzy_id, fuzzy_kmer))
+                links.append((kmer_id, fuzzy_id))
+
+        return fuzzy_kmers, links
+
+    def _fuzzify_kmer(self, kmer, current_seq="", mismatches=0):
+        """ 
+        Generates all fuzzy kmers with a given number of mismatches (by self.mismatches)
+        will not generate fuzzy kmers with < self.mismatches because clusters with mismatch < N are included
+
+        However, for best primer finding, it may be useful (though computationally redundant) to have the most error free fuzzy representative. Therefore, I would recommend finding fuzzy kmers adding a progressive amounts of N's as appropriate results aren't found.
+
+        This is a slow point of my program right now. I need to speed up.  
+        """
+        # check if we are to the end
+        if len(current_seq) >= self.k - self.stable_bp:
+            # only yield is the appropriate number of mismatches have been allowed
+            if mismatches == self.mismatches:
+                yield "".join((current_seq, kmer))
+
+            return
+        
+        # skip if we are still in the stable start
+        elif len(current_seq) < self.stable_bp:
+            pass
+
+        else:
+            
+            # check if the current base can be fuzzy (not too many previous errors)
+            if mismatches < self.mismatches:
+                # run the ambiguous result
+                for result in self._fuzzify_kmer(kmer[1:], current_seq+"N", mismatches+1):
+                    yield result
+ 
+            # base cannot be fuzzy, already enough errors
+            else:
+                # once again, not sure why I can't just return this...
+                yield "".join((current_seq, kmer))
+                return
+        
+        # run the next iteration if not returned
+        for result in self._fuzzify_kmer(kmer[1:], current_seq+kmer[0], mismatches):
+            yield result
+
+
+    #
+    ## Database Commands
+    #
+
+    def genome_in_database(self, genome_name):
+        """ Checks if a genome is present in the Genomes table """
+        cursor = self.dbc.execute("SELECT 1 FROM Genomes WHERE name = '{}' LIMIT 1".format(genome_name))
+        results = cursor.fetchone()
+        print(results)
+        if results:
+            return True
+        else:
+            return False
+
+    def _change_sync(self, value):
+        """ Switches pragma sync to either OFF or NORMAL """
+        if value in ["OFF", "NORMAL"]:
+            self.dbc.execute("PRAGMA synchronous = {}".format(value))
+        else:
+            raise ValueError("{} is not an appropriate sync mode.".format(value))
+
+    def _add_genome(self, genome_name):
+        """ Adds a genome name and returns genome id in database """
+
+        self.dbc.execute("INSERT INTO Genomes (name) VALUES (?)", (genome_name,))
+        return self.dbc.lastrowid
+
+    def _add_contig(self, contig_name, genome_id):
+        """ Adds a contig and returns the contig id in the database """
+
+        self.dbc.execute("INSERT INTO Contigs (name, genome) VALUES (?, ?)", (contig_name, genome_id))
+        return self.dbc.lastrowid
+
+    def _add_kmers(self, kmers):
+        """ Insert ignore new kmers from a list of kmer iterables """
+        self.dbc.executemany('INSERT OR IGNORE INTO Kmers (id, name) VALUES (?, ?)', kmers)
+
+    def _add_locations(self, locations):
+        """ Insert new locations from a list of location tuples """
+        self.dbc.executemany('INSERT INTO Locations (contig, start, strand, kmer) VALUES (?, ?, ?, ?)', locations)
+
+    #
+    ## Querying the database 
+    #
+    
+    @staticmethod
+    def _sql_results_to_file(fh, cursor):
+        """ Writes results to a tab delimited file """
+        while True:
+            results = cursor.fetchmany(10000)
+            if not results:
+                break
+            else:
+                for result in results:
+                    fh.write("\t".join([str(i) for i in result]) + "\n")
+
+    @staticmethod
+    def _iter_from_file(f, batchsize):
+        """ Yields groups of at most batchsize from a file. Results are lists of tuples """
+        with open(f) as IN:
+            lines_in_batch = 0
+            batch = []
+            for line in IN:
+                batch.append(line[:-1].split("\t"))
+                
+                lines_in_batch += 1
+
+                if lines_in_batch == batchsize:
+                    yield batch
+                    
+                    batch = []
+                    lines_in_batch = 0
+                
+
+    @staticmethod
+    def _iter_sql_results(cursor, batchsize):
+        """ Iterates over SQL results yielding batches of size=batchsize """
+        while True:
+            results = cursor.fetchmany(batchsize)
+            if not results:
+                break
+            else:
+                yield results
+
+    def find_conserved_kmers(self, genomes=None, fuzzy=False):
+        """ Finds conserved kmers in all (default) or a specific set of genomes (specified by genomes argument) """
+        
+        # make a temporary table with only the genomes we want to include
+        # If genomes not specified, this table will be an exact clone on Genomes
+        conn.execute("""CREATE TEMPORARY TABLE SubGen (
+                        id INTEGER PRIMARY KEY NOT NULL,
+                        name STRING
+                        );
+                        """)
+        if genomes:
+            conn.execute("""INSERT INTO SubGen (id, name)
+                            SELECT id, name FROM Genomes
+                            WHERE Genomes.id IN ({ph})
+                            """.format(ph=",".join(["?"]*len(genomes))), genomes)
+        else:
+            conn.execute("""INSERT INTO SubGen (id, name)
+                            SELECT id, name FROM Genomes
+                            """)
+ 
+
+
+        if fuzzy:
+
+            conn.execute("SELECT * FROM FuzzyKmers WHERE (SELECT COUNT(DISTINCT Contigs.genome) FROM LOCATIONS JOIN Contigs ON Contigs.id = Locations.contig JOIN KmerToFuzzy ON KmerToFuzzy.fuzzy = FuzzyKmers.id WHERE Locations.kmer = KmerToFuzzy.kmer) = 2")
+
+        else:
+
+            """
+            Here, we want to check, for each kmer, if that kmer is present in all genomes.
+
+            SQL statement broken down:
+
+            # select everything from the Kmers records that match
+            SELECT * FROM Kmers 
+                WHERE 
+
+                # count unique genomes in the set of contigs generated by the following statements
+                (SELECT COUNT(DISTINCT Contigs.genome)
+            
+                # select from the locations table
+                FROM Locations
+            
+                # join with contigs to have access to genome data per location
+                JOIN Contigs
+                    ON Contigs.id=Locations.contig
+            
+                # right join with subgen to limit locations to entires within the genomes we want to consider
+                RIGHT JOIN SubGen
+                    ON SubGen.id = Contigs.genome
+
+                # Link all the locations to their entry in Kmers
+                WHERE Locations.kmer=Kmers.id)
+
+            # check if num unique genomes == total genomes in the subset
+            = SELECT COUNT(*) FROM SubGen;
+            """
+            conn.execute("""
+                    SELECT * FROM Kmers 
+                    WHERE 
+                        (SELECT COUNT(DISTINCT Contigs.genome) 
+                            FROM Locations 
+                            JOIN Contigs 
+                                ON Contigs.id=Locations.contig
+                            RIGHT JOIN SubGen 
+                                ON SubGen.id = Contigs.genome
+                            WHERE Locations.kmer=Kmers.id) 
+                        = SELECT COUNT(*) FROM SubGen;
+                    """).fetchall() 
+
+
+class KCounter(multiprocessing.Process):
+
+    COMPLEMENT_MAP = {"A": "T", "T": "A", "G": "C", "C": "G"}
+
+    def __init__(self, name, k, input_queue, results_queue):
+        super().__init__()
+        self.name = name
+        self.k = k
+        self.input_queue = input_queue
+        self.results_queue = results_queue
+
+        self.kmers = {}
+        self.locations = []
+
+    @classmethod
+    def _reverse_complement(cls, kmer):
+        return ''.join([cls.COMPLEMENT_MAP[nt] for nt in reversed(kmer)])
+
+    @staticmethod
+    def _kmer_to_id(kmer):
+        """ Returns a base10 id from a base4 representation coding the nucleotides """
+        # statements are chained together like this because this timed as the fastest way
+        id_str = kmer.replace("A", "0").replace("C", "1").replace("G", "2").replace("T", "3")
+        return int(id_str, 4)
+
+
+    def run(self):
+        LOG.debug("Starting {}".format(self.name)) 
+        # wait for kmers to count
+        while True:
+
+            itm = self.input_queue.get()
+
+            if type(itm) == tuple:
+                genome, contig, start, seq = itm
+                self.count_kmers(genome, contig, start, seq)
+                self.dump_kmers_and_locations()
+            elif itm == "STOP":
+                LOG.debug("Returning from {}".format(self.name))
+                return
+
+            else:
+                print("Not tuple!")
+
+
+
+    def count_kmers(self, genome, contig, start, seq):
+        for indx in range(len(seq)+1 - self.k):
+            #kmers_counted += 1
+            kmer = seq[indx:indx+self.k]
+
+            # check if there is an N in the kmer and discard it if so
+            if "N" in kmer:
+                continue
+               
+            # choose the < of the kmer and its RC
+            canonical = sorted((kmer, self._reverse_complement(kmer)))[0]
+        
+            # set strand based on whether or not rc was used
+            if canonical == kmer:
+                strand = "1"
+            else:
+                strand = "-1"
+
+            kmer_id = self._kmer_to_id(kmer)
+            # add the location and the kmer 
+            self.locations.append((contig, start+indx, strand, kmer_id))
+            self.kmers[kmer_id] = kmer
+        return
+
+    def dump_kmers_and_locations(self):
+        """ Dumps the kmers and locations to the output queue and clears the variables from memory """
+        # convert to kmer dict to a list of tuples
+        kmer_dump = [(k, v) for k, v in self.kmers.items()]
+
+        self.results_queue.put((kmer_dump, self.locations))
+
+        # reset the variables
+        self.locations = []
+        self.kmers = {}
+        
+
+#=====================================================
 
 class KmerCounter(object):
 
@@ -322,6 +812,7 @@ class KmerPartition(multiprocessing.Process):
                 for kmer in cls._recurse_all_kmers(k, curseq + nt):
                     yield kmer
  
+
     def _digest_kmer(self, kmer, current_seq="", mismatches=0):
         """ This is a slow point of my program right now. I need to speed up. """
         # check if we are to the end
@@ -354,7 +845,6 @@ class KmerPartition(multiprocessing.Process):
         for result in self._digest_kmer(kmer[1:], current_seq+kmer[0], mismatches):
             #print(("result", result))
             yield result
-
 
     def add_kmer(self, kmer, position):
 
@@ -1259,7 +1749,7 @@ def worker_get_properly_spaced_options(input_queue, output_queue, k, max_dist, m
                         # puts a tuple of (key, loc1, loc2)
                         output_queue.put((key, k1[1], k2[1]))
 
-def _find_properly_spaced(queue, data_bin, k=20, max_dist=400, min_dist=100):
+def remove__find_properly_spaced(queue, data_bin, k=20, max_dist=400, min_dist=100):
     """ 
     Must look for the proper location.
 
@@ -1456,7 +1946,7 @@ def subset_amplicon_file(amplicon_f, min_genomes=0, max_duplicates=99, max_Ns=99
             yield amplicon
 
 
-def write_all_amplicons(amplicons, fastas, k, out_dir):
+def remove__write_all_amplicons(amplicons, fastas, k, out_dir):
     """ 
     TODO: Need to do something with kmers that are duplicated in a genome.
 
@@ -1804,9 +2294,13 @@ def main(fastas, k):
 
     3. Fasta file for each amplicon that can tell apart any number of genomes uniquely (n > 1).
     """
-
-
     
+
+def main_database(fastas, k, threads=8):
+    counter = KmerCounterSQL("kmer_db", k, threads)
+
+    counter.count_kmers(fastas)
+    counter.generate_fuzzy_kmers()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -1814,4 +2308,5 @@ if __name__ == "__main__":
     parser.add_argument("-k", help="value of k to use", required=True, type=int)
     args = parser.parse_args()
 
-    main(args.fastas, args.k)
+    #main(args.fastas, args.k)
+    main_database(args.fastas, args.k)
