@@ -40,7 +40,8 @@ logging.getLogger("requests").setLevel(logging.WARNING)
 # these globals are the base paths for the JGI webportals that are needed
 global LOGIN, XML, DATA, LOOKUP
 LOGIN = 'https://signon.jgi.doe.gov/signon/create'
-# I should change this path to use params instead of just completing
+
+# this is the XML page of the downloads
 XML = 'http://genome.jgi.doe.gov/ext-api/downloads/get-directory?organism='     # complete with organism name
 DATA = 'http://genome.jgi.doe.gov/'     # complete with path to file from the organism XML
 LOOKUP = 'http://genome.jgi.doe.gov/lookup?'
@@ -736,12 +737,32 @@ class JGIOrganism(object):
             #print("Couldn't find URL for IMG id: {}".format(self.taxon_oid), file=sys.stderr)
             raise AttributeLookupError("proj_id -> download link not found for taxon_oid '{}' at URL:\n{}".format(self.taxon_oid, img_html.url))
 
+    def _lookup_organism_index(self):
+        """ This looks up the organism index which is the identifier used by JGI to navigate to the downloads pages or organisms not sequenced at JGI, it can be found in the same place the proj_id is found for genomes sequenced at JGI """
+        try:
+            my_params = {'section': 'TaxonDetail', 'page': 'taxonDetail', 'taxon_oid': self.taxon_oid}
+        except AttributeLookupError:
+            raise AttributeLookupError("proj_id -> attribute taxon_oid is required to lookup proj_id")
+
+        img_html = self.interface.session.get(IMG_LOOKUP, params=my_params, headers=self.interface.header)
+        
+        # parse a line that looks like this:
+        # <a class="genome-btn download-btn" href="http://genome.jgi.doe.gov/IMG_2643221536/IMG_2643221536.info.html"
+        m = re.search("\"genome-btn download-btn.*href=['\"].*/([^.]+)\.info.*['\"]", img_html.text)
+        if m:
+            LOG.debug("Organism index lookup successful. index={}".format(m.group(1)))
+            return m.group(1)
+        else:
+            #print("Couldn't find URL for IMG id: {}".format(self.taxon_oid), file=sys.stderr)
+            raise AttributeLookupError("organism_indx -> download link not found for taxon_oid '{}' at URL:\n{}".format(self.taxon_oid, img_html.url))
+
     def _lookup_organism_name(self):
         """
         Looks up organism name based on project id
 
         At the name lookup step it will be obvious if there are portal errors.
 
+        NOTE: !!!! This may fail for isolates not sequenced at JGI
         """
         
         try:
@@ -788,6 +809,9 @@ class JGIOrganism(object):
 
     def _lookup_jgi_data_tree(self):
         """
+        Traditionally, organisms were indexed using organism name, however, for organisms not sequenced at JGI
+        it looks like the index is the taxon oid
+
         Parses the XML structure to return a parent (root) node of a tree of JGIBasePath derrived objects.
 
         XML Structure Expected:
@@ -806,7 +830,12 @@ class JGIOrganism(object):
         try:
             link = XML + self.organism_name
         except AttributeLookupError:
-            raise AttributeLookupError("jgi_data_tree -> attribute organism_name is required for lookup of available files")
+            # try to get the identifier for isolates not sequenced at JGI
+            try:
+                link = XML + self._lookup_organism_index()
+            except AttributeLookupError:
+                raise AttributeLookupError("jgi_data_tree -> neither organism_name nor organism_index could be found. One or the other is required to lookup available files.")
+
 
         xml = self.interface.session.get(link).text
 
