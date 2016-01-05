@@ -10,6 +10,8 @@ import logging
 import re
 import pickle
 from Bio import SeqIO
+from Bio.SeqRecord import SeqRecord
+from Bio.Seq import Seq
 import queue
 import multiprocessing
 import psutil
@@ -29,19 +31,76 @@ LOG.setLevel("DEBUG")
 
 """
 
-TODO: Rewrite using sqlite. Should be faster and use less memory. Basically, I have written a poor version of SQLite using my dumping method.
 
-TODO: The mergesort algorithm may be incorrect. For amplicons, it reports a correct number of locations but has more amplicons (not too many more)
-
-    For Kmers, it reports less than half as many results (locations) though there were a consistent number (4911) kmers conserved between all genomes.
+I also suspect that this program may not be accounting for reverse complements.
 
 TODO: Print some final stats about amplicons (number unique, etc).
 
-TODO: It would be great to be able to be able to load the indexes from a previous run to avoid having to recalculate them.
 """
 
-class KmerCounterSQL(object):
+class Database(object):
+    """ Serves as the base class for database objects """
 
+    @staticmethod
+    def open_database(database_f):
+        """ Opens a database and returns a connection """
+        return sqlite3.connect(database_f, check_same_thread=False)
+
+    @staticmethod
+    def init_database(conn):
+        """ Set up some pragmas that will hopefully increase speed """
+        conn.execute("PRAGMA main.page_size = 4096")
+        conn.execute("PRAGMA main.cache_size = 5000")
+        conn.execute("PRAGMA main.locking_mode = EXCLUSIVE")
+        conn.execute("PRAGMA main.synchronous = NORMAL")
+        #conn.execute("PRAGMA main.journal_mode = WAL")
+        #conn.exeucte("PRAGMA main.temp_store = MEMORY")
+
+    @staticmethod
+    def _sql_results_to_file(fh, cursor):
+        """ Writes results to a tab delimited file """
+        while True:
+            results = cursor.fetchmany(100000)
+            if not results:
+                break
+            else:
+                for result in results:
+                    fh.write("\t".join([str(i) for i in result]) + "\n")
+
+    @staticmethod
+    def _iter_from_file(f, batchsize):
+        """ Yields groups of at most batchsize from a file. Each group is a list of tuples """
+        with open(f) as IN:
+            lines_in_batch = 0
+            batch = []
+            for line in IN:
+                batch.append(line[:-1].split("\t"))
+                
+                lines_in_batch += 1
+
+                if lines_in_batch == batchsize:
+                    yield batch
+                    
+                    batch = []
+                    lines_in_batch = 0
+                
+    @staticmethod
+    def _iter_sql_results(cursor, batchsize):
+        """ Iterates over SQL results yielding batches of size=batchsize """
+        while True:
+            results = cursor.fetchmany(batchsize)
+            if not results:
+                break
+            else:
+                yield results
+
+
+class MainDatabase(Database):
+    """
+    Represents the main kmer database.
+
+    Tables are Genomes, Contigs, Sequences, Locations, FuzzyKmers, and KmerToFuzzy
+    """
 
     def __init__(self, database, k, threads, mismatches=1, stable_bp=2):
         self.database_f = database
@@ -49,22 +108,87 @@ class KmerCounterSQL(object):
         self.threads = threads
         self.mismatches = mismatches
 
+        # set a flag to be used to bypass fuzzy kmer creation if no new genomes are added
+        self.changed = False
+
         # stables are # bases at beginning and end that cannot be mismatches
         self.stable_bp = stable_bp
 
         # open/make the database
         if os.path.isfile(self.database_f): 
-            self.open_database()
+            self.dbc = self.open_database(self.database_f)
         else:
-            self.open_database()
+            self.dbc = self.open_database(self.database_f)
+            self.init_database(self.dbc)
             self.make_SQL_tables()
 
-    def open_database(self):
-        self.database = sqlite3.connect(self.database_f, check_same_thread=False)
-        self.dbc = self.database.cursor()
+    #
+    # These check methods cause a later multiprocessing step to break when pulling off queues
+    #
+
+    """
+    
+    These check methods cause a later multiprocessing step to break when pulling off queues
+
+    This is the error it gives me. I don't know why it would give this error as it seems to be an internal error...
+
+    Traceback (most recent call last):
+    File "/nas02/home/h/j/hjcamero/anaconda/envs/py3k/lib/python3.4/multiprocessing/process.py", line 254, in _bootstrap
+    self.run()
+    File "/nas02/home/h/j/hjcamero/scripts/job_scripts/omri/compare_fuzzy_kmers.py", line 1544, in run
+    itm = self.input_queue.get()
+    File "/nas02/home/h/j/hjcamero/anaconda/envs/py3k/lib/python3.4/multiprocessing/queues.py", line 115, in get
+    return ForkingPickler.loads(res)
+    TypeError: function takes exactly 2 arguments (0 given)
+
+
+
+    #### Changing the row_factory back to None solves the issue.
+      
+    """
+
+    def check_recount(self):
+        """ Returns True if kmers need to be recounted """
+        self.dbc.row_factory = sqlite3.Row
+
+        params = self.dbc.execute("SELECT * FROM Params").fetchall()[0]
+
+        # for some reason, multiprocessing breaks if row_factory is sqlite3.Row
+        self.dbc.row_factory = None
+
+        if self.k == params["k"]:
+            return False
+        else:
+            return True
+
+
+    def check_refuzzify(self):
+        """ Returns True is fuzzy kmers need to be recalculated """
+        self.dbc.row_factory = sqlite3.Row
+
+        params = self.dbc.execute("SELECT * FROM Params").fetchall()[0]
+
+        # for some reason, multiprocessing breaks if row_factory is sqlite3.Row
+        self.dbc.row_factory = None
+ 
+        if self.k == params["k"] and self.mismatches == params["mismatches"] and self.stable_bp == params["stable_bp"]:
+            return False
+        else:
+            return True
+
 
     def make_SQL_tables(self):
         """ Makes SQL tables corresponding to all the info I want """
+
+        # create table that holds the params
+        self.dbc.execute(""" CREATE TABLE Params (
+                        k INTEGER,
+                        mismatches INTEGER,
+                        stable_bp INTEGER
+                        );
+                        """)
+
+        self.dbc.execute(""" INSERT INTO Params (k, mismatches, stable_bp) VALUES (?, ?, ?)""", (self.k, self.mismatches, self.stable_bp))
 
         # create table that holds the genome names
         self.dbc.execute("""CREATE TABLE Genomes (
@@ -79,6 +203,14 @@ class KmerCounterSQL(object):
                         name TEXT,
                         genome INTEGER NOT NULL,
                         FOREIGN KEY(genome) REFERENCES Genomes(id)
+                        );
+                        """)
+
+        self.dbc.execute(""" CREATE TABLE Sequences (
+                        id INTEGER PRIMARY KEY NOT NULL,
+                        contig INTEGER NOT NULL,
+                        seq TEXT,
+                        FOREIGN KEY(contig) REFERENCES Contigs(id)
                         );
                         """)
 
@@ -134,14 +266,51 @@ class KmerCounterSQL(object):
             for nt in ["A", "C", "G", "T"]:
                 for kmer in cls._recurse_all_kmers(k, curseq + nt):
                     yield kmer
- 
 
-    def count_kmers(self, fastas):
+
+    def process(self, fastas):
+        """ Shortcut method for counting kmers, making fuzzy kmers (if necessary) and looking for amplicons """
+        self.count_kmers(fastas)
+
+        # somehow I need to determine if I need to recalculate or not        
+        # also would be nice to not do this automatically in case allowed mismatches is 0
+        # distinction between calculating the fuzzy table and the number of mismatches to be allowed for the present run.
+        # don't want to run into problems if first ran with mismatches = 0 and then retry with 1 and not calc table because no changes. Would be optimal to if the fuzzy table has been made and how many errors it has been made with.
+        # perhaps I need a metadata table to store such things
+        # maybe I can compile multiple fuzzy kmer tables...
+        # for now, I'll just always run it with a single fuzzy kmer
+        self.generate_fuzzy_kmers()
+
+
+        """
+        I'd like finding amplicons to be a two-step process, first look without fuzzy, then look with fuzzy
+
+        If sufficient results are found without fuzzy, it would be a waste of time and give worse results to fun fuzzy
+
+
+        Need to make get_amplicon_stats report counts that can be evaluated before doing fuzzy stuff.
+        """
+        counter.find_conserved_kmers(fuzzy=True)
+        counter.find_potential_amplicons()
+        counter.get_amplicon_stats()
+
+    def count_kmers(self, fastas, recalculate=False):
         """
         The counter here should do nothing but update the database.
 
         In multiple other threads the counter should be running counting kmers and should return multiple lists of tuples. The first contains all the unique kmers that need to be in kmers and the second contains Locations for the counted segment.
         """
+
+        if self.check_recount() and not recalculate:
+            raise ValueError("Kmers need to be recounted (current params don't match database params) but -force was not supplied.")
+
+        # if we get the recalculate option, erase everything
+        if recalculate:
+            self.dbc.execute("DELETE FROM Genomes")
+            self.dbc.execute("DELETE FROM Contigs")
+            self.dbc.execute("DELETE FROM Sequences")
+            self.dbc.execute("DELETE FROM Kmers")
+
         input_queue = multiprocessing.Queue()
         results_queue = multiprocessing.Queue(15)
 
@@ -161,6 +330,7 @@ class KmerCounterSQL(object):
                 continue
             else:
                 LOG.info("Counting kmers for {}".format(genome_name))
+                self.changed = True
 
             # add fasta to the database and get the genome index
             genome_id = self._add_genome(genome_name)
@@ -171,8 +341,8 @@ class KmerCounterSQL(object):
                 for record in SeqIO.parse(IN, "fasta"):
 
 
-                    # add contig to the database and get the contig index
-                    contig_id = self._add_contig(record.description, genome_id)
+                    # add contig and sequence to the database and get the contig index
+                    contig_id = self._add_contig(record.description, genome_id, str(record.seq))
 
                     # split the sequence up into pieces and put the pieces into the input queue
                     for indx in range(0, len(record.seq), 500000):
@@ -189,8 +359,7 @@ class KmerCounterSQL(object):
                 self._add_kmers(kmers)
                 LOG.debug("Adding locations to database.")
                 self._add_locations(locations)
-            self.database.commit()
-            print(self.database.total_changes)
+            self.dbc.commit()
 
         for _ in workers:
             input_queue.put("STOP")
@@ -202,43 +371,58 @@ class KmerCounterSQL(object):
     #
     ## Populating fuzzy kmer table
     #
-    def generate_fuzzy_kmers(self):
+    def generate_fuzzy_kmers(self, recalculate=False):
         """ Populates the FuzzyKmer and KmerToFuzzy tables 
         
-        All kmers without entries in the fuzzy tables are queries and results are written to file
-        Then, file is iterated over in multiprocessing and batches of fuzzy entries are added to table.
+        Checks first if any new genomes have been added and skips this step if none have.
 
-        I use this schema because SQL complains (and sometimes Segfaults) if any sqlite object (including a cursor) is used in a thread other than the originating thread)
+        Fuzzy kmers can be recalculated using recalculate=True
         """
 
-        # make a pool to process results
-        pool = multiprocessing.Pool(self.threads)
+        refuzzify = self.check_refuzzify()
 
+        # first check if fuzzy kmers need to be recalculated
+        if refuzzify:
+            if recalculate:
+                LOG.info("Recalculating fuzzy kmers from scratch...")
+                self.dbc.execute("DELETE FROM FuzzyKmers")
+                self.dbc.execute("DELETE FROM KmerToFuzzy")
+ 
+            else:
+                raise ValueError("Fuzzy Kmers need to be recalculated(current params don't match database params) which would erase original data but -force was not supplied.")
+
+
+        # this step takes a long time on huge tables so I want to skip it if possible
+        # I think I want to bypass this in the interest of ensuring the fuzzy kmers get calculated when they should
+        """
+        if refuzzify is False and self.changed is False:
+            LOG.info("No database changes detected. Skipping updating fuzzy kmers.")
+            return
+        """
+            
         # select kmers that do not have an entry in the KmersToFuzzy table (ones that have not yet been processed)
         LOG.info("Selecting kmers to fuzzify...")
         cursor = self.dbc.execute("SELECT Kmers.id, Kmers.name from Kmers LEFT JOIN KmerToFuzzy ON kmers.id = KmerToFuzzy.kmer WHERE KmerToFuzzy.kmer is NULL")
 
-
-        # write results to a temporary file
-        # TODO Actually use the tmpfile module to generate this file
-        LOG.info("Writting kmers to a temporary file...")
-        with open("tmpkmer.dmp", "w") as OUT:
-            self._sql_results_to_file(OUT, cursor)
-
-        iter_fuzzy_kmers = pool.imap(self._generate_fuzzy_entries, self._iter_from_file("tmpkmer.dmp", 100000))
-
         LOG.info("Fuzzifying and inserting fuzzy kmers into database...")
-        for fuzzy_kmers, links in iter_fuzzy_kmers:
+        result_num = 0
+        for fuzzy_kmers, links in lazy_imap(self.threads, self._generate_fuzzy_entries, self._iter_sql_results(cursor, 500000)):
+
+            result_num += 1
+            LOG.debug("After getting result {}".format(result_num))
+            get_memory_usage(verbose=True)
+
             LOG.debug("Inserting {} elements into FuzzyKmers...".format(len(fuzzy_kmers)))
             self.dbc.executemany("INSERT OR IGNORE INTO FuzzyKmers (id, name) VALUES (?, ?)", fuzzy_kmers)
             LOG.debug("Inserting {} elements into KmerToFuzzy...".format(len(links)))
             self.dbc.executemany("INSERT INTO KmerToFuzzy (kmer, fuzzy) VALUES (?, ?)", links)
 
-        self.database.commit()
+        self.dbc.commit()
         
     def _generate_fuzzy_entries(self, kmers):
         """ Takes an iterable of kmers (id, name) and returns a list of fuzzy kmers ready to be inserted into the FuzzyKmer table and a list of links between FuzzyKmers and real kmers"""
 
+        #LOG.debug("Beginning fuzzifying batch...")
         fuzzy_kmers = []
         links = []
         for kmer_id, kmer in kmers:
@@ -249,6 +433,7 @@ class KmerCounterSQL(object):
                 fuzzy_kmers.append((fuzzy_id, fuzzy_kmer))
                 links.append((kmer_id, fuzzy_id))
 
+        #LOG.debug("Done fuzzifying batch...")
         return fuzzy_kmers, links
 
     def _fuzzify_kmer(self, kmer, current_seq="", mismatches=0):
@@ -299,7 +484,6 @@ class KmerCounterSQL(object):
         """ Checks if a genome is present in the Genomes table """
         cursor = self.dbc.execute("SELECT 1 FROM Genomes WHERE name = '{}' LIMIT 1".format(genome_name))
         results = cursor.fetchone()
-        print(results)
         if results:
             return True
         else:
@@ -315,14 +499,20 @@ class KmerCounterSQL(object):
     def _add_genome(self, genome_name):
         """ Adds a genome name and returns genome id in database """
 
-        self.dbc.execute("INSERT INTO Genomes (name) VALUES (?)", (genome_name,))
-        return self.dbc.lastrowid
+        cursor = self.dbc.execute("INSERT INTO Genomes (name) VALUES (?)", (genome_name,))
+        return cursor.lastrowid
 
-    def _add_contig(self, contig_name, genome_id):
-        """ Adds a contig and returns the contig id in the database """
+    def _add_contig(self, contig_name, genome_id, sequence):
+        """ Adds a contig and its sequence and returns the contig id in the database """
+        
+        # add the contig
+        cursor = self.dbc.execute("INSERT INTO Contigs (name, genome) VALUES (?, ?)", (contig_name, genome_id))
+        contig_id = cursor.lastrowid
 
-        self.dbc.execute("INSERT INTO Contigs (name, genome) VALUES (?, ?)", (contig_name, genome_id))
-        return self.dbc.lastrowid
+        # add the sequence
+        self.dbc.execute("INSERT INTO Sequences (contig, seq) VALUES (?, ?)", (contig_id, sequence))
+
+        return contig_id
 
     def _add_kmers(self, kmers):
         """ Insert ignore new kmers from a list of kmer iterables """
@@ -332,118 +522,881 @@ class KmerCounterSQL(object):
         """ Insert new locations from a list of location tuples """
         self.dbc.executemany('INSERT INTO Locations (contig, start, strand, kmer) VALUES (?, ?, ?, ?)', locations)
 
+
     #
-    ## Querying the database 
+    ## Run-specific commands 
     #
-    
-    @staticmethod
-    def _sql_results_to_file(fh, cursor):
-        """ Writes results to a tab delimited file """
-        while True:
-            results = cursor.fetchmany(10000)
-            if not results:
-                break
-            else:
-                for result in results:
-                    fh.write("\t".join([str(i) for i in result]) + "\n")
 
-    @staticmethod
-    def _iter_from_file(f, batchsize):
-        """ Yields groups of at most batchsize from a file. Results are lists of tuples """
-        with open(f) as IN:
-            lines_in_batch = 0
-            batch = []
-            for line in IN:
-                batch.append(line[:-1].split("\t"))
-                
-                lines_in_batch += 1
-
-                if lines_in_batch == batchsize:
-                    yield batch
-                    
-                    batch = []
-                    lines_in_batch = 0
-                
-
-    @staticmethod
-    def _iter_sql_results(cursor, batchsize):
-        """ Iterates over SQL results yielding batches of size=batchsize """
-        while True:
-            results = cursor.fetchmany(batchsize)
-            if not results:
-                break
-            else:
-                yield results
+    def prepare_run_db(self):
+        self.open_database
 
     def find_conserved_kmers(self, genomes=None, fuzzy=False):
-        """ Finds conserved kmers in all (default) or a specific set of genomes (specified by genomes argument) """
+        """ Finds conserved kmers in all (default) or a specific set of genomes (specified by genomes argument) 
+        It would be nice to somehow filter out duplicates where duplicates = :
+            1. kmers that are consecutive in all genomes
+            2. fuzzy kmers that are logical duplicates (each perfectly matching kmer has something like 16 logical duplicates).
+        """
         
         # make a temporary table with only the genomes we want to include
-        # If genomes not specified, this table will be an exact clone on Genomes
-        conn.execute("""CREATE TEMPORARY TABLE SubGen (
+        # If genomes not specified, this table will be an exact clone of Genomes
+        self.dbc.execute(""" DROP TABLE IF EXISTS SubGen """)
+        self.dbc.execute("""CREATE TEMPORARY TABLE SubGen (
                         id INTEGER PRIMARY KEY NOT NULL,
                         name STRING
                         );
                         """)
         if genomes:
-            conn.execute("""INSERT INTO SubGen (id, name)
+            self.dbc.execute("""INSERT INTO SubGen (id, name)
                             SELECT id, name FROM Genomes
                             WHERE Genomes.id IN ({ph})
                             """.format(ph=",".join(["?"]*len(genomes))), genomes)
         else:
-            conn.execute("""INSERT INTO SubGen (id, name)
+            self.dbc.execute("""INSERT INTO SubGen (id, name)
                             SELECT id, name FROM Genomes
                             """)
  
+        return
+
+        # Make a temporary table to hold the conserved Kmers
+        self.dbc.execute("DROP TABLE IF EXISTS ConservedKmers")
+
+        self.dbc.execute("""
+                CREATE TABLE ConservedKmers (
+                id INTEGER PRIMARY KEY NOT NULL,
+                kmer INTEGER NOT NULL,
+                genome INTEGER NOT NULL,
+                contig INTEGER NOT NULL,
+                start INTEGER NOT NULL,
+                strand INTEGER NOT NULL
+                );
+                """)
 
 
         if fuzzy:
+            # select fuzzy kmers that are present in all genomes
+            LOG.debug("Finding conserved fuzzy kmers...")
 
-            conn.execute("SELECT * FROM FuzzyKmers WHERE (SELECT COUNT(DISTINCT Contigs.genome) FROM LOCATIONS JOIN Contigs ON Contigs.id = Locations.contig JOIN KmerToFuzzy ON KmerToFuzzy.fuzzy = FuzzyKmers.id WHERE Locations.kmer = KmerToFuzzy.kmer) = 2")
+            self.dbc.execute("""
+                    -- Insert results into the temp table
+                    INSERT INTO ConservedKmers (kmer, genome, contig, start, strand) 
+                    
+                    -- Select from Location
+                    SELECT cons_kmer, Contigs.genome, Locations.contig, Locations.start, Locations.strand 
+                    FROM Locations 
+
+                    -- join Contigs to be able to join SubGen
+                    INNER JOIN Contigs 
+                        ON Contigs.id = Locations.contig 
+                    
+                    -- join SubGen to check genome number
+                    INNER JOIN SubGen
+                        ON Contigs.genome = SubGen.id
+
+
+                    -- join with a select that checks  all genomes represented
+                    INNER JOIN (
+                            SELECT FuzzyKmers.id cons_kmer, KmerToFuzzy.kmer as fkmer
+                            FROM FuzzyKmers
+
+                            -- join KmerToFuzzy to get the kmers each fuzzy represents
+                            INNER JOIN KmerToFuzzy
+                                ON FuzzyKmers.id = KmerToFuzzy.fuzzy
+
+                            -- join locations to get counts
+                            INNER JOIN Locations
+                                ON KmerToFuzzy.kmer = Locations.kmer
+
+                            -- join contigs to get genomes
+                            INNER JOIN Contigs 
+                                ON Locations.contig = Contigs.id 
+
+                            -- group by fuzzy kmer
+                            GROUP BY FuzzyKmers.id
+
+                            -- contrain to all genomes represented
+                            HAVING COUNT(DISTINCT Contigs.genome) = (SELECT COUNT(*) FROM SubGen)) 
+                        ON Locations.kmer = fkmer
+
+               """)
+
 
         else:
 
-            """
-            Here, we want to check, for each kmer, if that kmer is present in all genomes.
+            # select kmers that are present in all genomes
+            LOG.debug("Finding conserved kmers...")
 
-            SQL statement broken down:
+            self.dbc.execute("""
+                    -- insert results into temp table
+                    INSERT INTO ConservedKmers (kmer, genome, contig, start, strand) 
+                    
+                    -- select from locations
+                    SELECT Locations.kmer, Contigs.genome, Locations.contig, Locations.start, Locations.strand 
+                    FROM Locations 
 
-            # select everything from the Kmers records that match
-            SELECT * FROM Kmers 
-                WHERE 
+                    -- join contigs to be able to join SubGen
+                    INNER JOIN Contigs 
+                        ON Contigs.id = Locations.contig 
 
-                # count unique genomes in the set of contigs generated by the following statements
-                (SELECT COUNT(DISTINCT Contigs.genome)
-            
-                # select from the locations table
-                FROM Locations
-            
-                # join with contigs to have access to genome data per location
-                JOIN Contigs
-                    ON Contigs.id=Locations.contig
-            
-                # right join with subgen to limit locations to entires within the genomes we want to consider
-                RIGHT JOIN SubGen
-                    ON SubGen.id = Contigs.genome
+                    -- join subgen to limit to only required genomes
+                    INNER JOIN SubGen
+                        ON Contigs.genome = SubGen.id
 
-                # Link all the locations to their entry in Kmers
-                WHERE Locations.kmer=Kmers.id)
-
-            # check if num unique genomes == total genomes in the subset
-            = SELECT COUNT(*) FROM SubGen;
-            """
-            conn.execute("""
-                    SELECT * FROM Kmers 
-                    WHERE 
-                        (SELECT COUNT(DISTINCT Contigs.genome) 
+                    -- join to select that check for kmers in all genomes
+                    INNER JOIN (
+                            SELECT Locations.kmer ckmer 
                             FROM Locations 
+
+                            -- join contigs to get genome
                             JOIN Contigs 
-                                ON Contigs.id=Locations.contig
-                            RIGHT JOIN SubGen 
-                                ON SubGen.id = Contigs.genome
-                            WHERE Locations.kmer=Kmers.id) 
-                        = SELECT COUNT(*) FROM SubGen;
-                    """).fetchall() 
+                                ON Locations.contig = Contigs.id
+
+                            -- collapse around kmers
+                            GROUP BY Locations.kmer 
+
+                            -- contrain to only kmers found in all genomes
+                            HAVING COUNT(DISTINCT Contigs.genome) = (SELECT COUNT(*) FROM SubGen)) 
+                        ON Locations.kmer = ckmer
+                """)
+
+        self.database.commit()
+        #cursor = self.dbc.execute("SELECT * FROM ConservedKmers")
+        #print(cursor.fetchall())
+
+    def find_potential_amplicons(self, kmer_table="Kmers", min_genomes=1, min_dist=100, max_dist=400):
+        """ Finds all potential amplicons from conserved kmers """
+
+        LOG.info("Making amplicons table...")
+
+        # -- create temporary table 
+        self.dbc.execute("""
+                -- make temporary table
+                CREATE TEMPORARY TABLE temp_amplicons AS 
+                
+                -- populate it from this select
+                SELECT A.kmer AS kmer1, B.kmer AS kmer2, A.start as start1, B.start as start2, A.genome AS genome, A.contig AS contig, A.strand AS strand 
+                
+                FROM ConservedKmers A 
+                
+                -- self join to compare pairwise
+                INNER JOIN ConservedKmers B 
+                    ON (
+                        -- contig and strand must be the same
+                        A.contig = B.contig AND 
+                        A.strand = B.strand AND 
+                        
+                        -- distance must be appropriate and consistent with strand
+                        (
+                            (A.strand = '1' AND B.start - A.start BETWEEN {min_dist} AND {max_dist}) 
+                        OR 
+                            (A.strand = '-1' AND A.start - B.start BETWEEN {min_dist} AND {max_dist})
+                        )
+
+                        -- no self matches
+                        AND A.kmer != B.kmer
+                    )
+                """.format(min_dist=min_dist, max_dist=max_dist))
+
+        LOG.debug("temp_amplicons made... finishing table...")
+
+
+        # -- query temporary table
+        self.dbc.execute("DROP TABLE IF EXISTS Amplicons")
+        # this statement appends columns for num_genomes and num_total
+        self.dbc.execute("""
+                -- create a table
+                CREATE TABLE Amplicons AS 
+                
+                    -- populate it with the results from this select
+                    SELECT K1.name AS kmer1, K2.name AS kmer2, tmp_amp.start1, tmp_amp.start2, tmp_amp.genome, tmp_amp.contig, tmp_amp.strand, num_genomes, num_total 
+                    
+                    FROM temp_amplicons tmp_amp 
+                   
+                    -- join with some counts
+                    INNER JOIN 
+                        (SELECT temp_amplicons.kmer1 AS ta1, temp_amplicons.kmer2 AS ta2, COUNT(DISTINCT temp_amplicons.genome) AS num_genomes, COUNT(*) AS num_total 
+                    
+                        FROM temp_amplicons 
+                        
+                        -- group by amplicon
+                        GROUP BY temp_amplicons.kmer1, temp_amplicons.kmer2 
+                        
+                        -- require a minimum number of genomes
+                        HAVING num_genomes >= {min_genomes}) 
+                    
+                        -- merge counts with original table
+                        ON tmp_amp.kmer1 = ta1 AND tmp_amp.kmer2 = ta2 
+                    
+                    -- join with specified kmer table to get kmer1 sequence
+                    INNER JOIN {kmer_table} as K1 
+                        ON tmp_amp.kmer1 = K1.id 
+                    
+                    -- join with specified kmer table to get kmer2 sequence
+                    INNER JOIN {kmer_table} as K2 
+                        ON tmp_amp.kmer2 = K2.id 
+                        """.format(kmer_table=kmer_table, min_genomes=min_genomes))
+
+        # drop the temporary table
+        self.dbc.execute("DROP TABLE temp_amplicons")
+
+        # add an index to amplicons
+        self.dbc.execute("CREATE INDEX amplicon_indx on Amplicons (kmer1, kmer2)")
+
+        self.database.commit()
+
+    def get_amplicon_stats(self):
+
+        LOG.info("Checking amplicons and getting stats...")
+        cursor = self.dbc.execute("SELECT SubGen.name FROM SubGen ORDER BY SubGen.name")
+        genome_names = [str(itm[0]) for itm in cursor.fetchall()]
+
+      
+        # set some stats for writing amplicons
+        self.amp_write_genomes = len(genome_names)
+        self.amp_write_unique = len(genome_names)
+        self.amp_write_duplicates = 0
+        self.amp_write_N = 99
+
+
+        # make amplicon directory if it doesn't exist
+        if not os.path.isdir(self.amplicon_dir):
+            os.mkdir(self.amplicon_dir)
+
+        ordered_matches = "SELECT Amplicons.kmer1, Amplicons.kmer2 FROM Amplicons GROUP BY Amplicons.kmer1, Amplicons.kmer2 ORDER BY num_genomes DESC, num_total ASC"
+
+        cursor = self.dbc.execute(ordered_matches)
+
+        amplicon_stats = {}
+        for result in lazy_imap(self.threads, self.check_amplicon, self.generate_amp_packages(cursor)):
+            print(result)
+            amplicon_stats.update(result)
+
+
+        # sort the amplicons by num unique_genomes number (descending) and number of N's(ascending), and then num duplicates
+        sorted_amplicons = sorted(amplicon_stats, key=lambda amp_id: (-1 * amplicon_stats[amp_id]["num_unique"], amplicon_stats[amp_id]["fwd_N"] + amplicon_stats[amp_id]["rev_N"], amplicon_stats[amp_id]["num_duplicates"]))
+
+
+        with open(self.amplicon_stats_f, 'w') as STATS, open(self.amplicon_matr_f, 'w') as MATR:
+            # write headers to both files
+            STATS.write("\t".join(("amplicon", "num_genomes", "num_unique", "num_duplicates", "fwd_N", "rev_N")) + "\n")
+            MATR.write("\t".join(["amplicon"] + list(genome_names)) + "\n")
+
+            for amp in sorted_amplicons:
+                # k for key not length of kmer
+                write_stats = [str(amp)] + [str(amplicon_stats[amp][k]) for k in ["num_genomes", "num_unique", "num_duplicates", "fwd_N", "rev_N"]]
+                write_matr = [str(amp)]
+                for name in genome_names:
+                    try:
+                        write_matr.append(";".join(amplicon_stats[amp]["genome_clusters"][name]))
+                    except KeyError:
+                        write_matr.append("0")
+
+                STATS.write("\t".join(write_stats) + "\n")
+                MATR.write("\t".join(write_matr) + "\n")
+
+    def generate_amp_packages(self, cursor):
+        """ Generates so-called "amplicon packages" from a cursor that selects amplicons """
+
+        amp_id = 0
+        for batch in self._iter_sql_results(cursor, 100):
+            for amp in batch:
+                amp_id += 1
+                k1, k2 = amp
+
+                seqs = self.dbc.execute("""
+                        SELECT Genomes.name, Contigs.name, Amplicons.start1 as start, Amplicons.start2 + {k} as end, Amplicons.strand, SUBSTR(Sequences.seq, Amplicons.start1 + 1, Amplicons.start2 + {k} - Amplicons.start1) 
+                        
+                        FROM Amplicons 
+                        
+                        INNER JOIN Genomes 
+                            ON Amplicons.genome = Genomes.id 
+                        
+                        INNER JOIN Contigs 
+                            ON Amplicons.contig = Contigs.id 
+                        
+                        INNER JOIN Sequences 
+                            ON Amplicons.contig = Sequences.id WHERE Amplicons.kmer1 = '{k1}' 
+                            AND Amplicons.kmer2 = '{k2}'
+                        
+                        """.format(k=self.k, k1=k1, k2=k2)).fetchall()
+                yield (amp_id, k1, k2, seqs)
+
+    def check_amplicon(self, amp_package):
+        """ Checks amplicons and returns a dict of amplicon stats """
+        
+        # unpack the package
+        amp_id, fwd_prim, rev_prim, db_sequences = amp_package
+
+        amplicon_name = "amp{amp_id}_{fwd_prim}-{rev_prim}.fasta".format(amp_id=amp_id, fwd_prim=fwd_prim, rev_prim=rev_prim)
+        # initialize the results dict
+        amplicon_stats = {amplicon_name: {}}
+
+        amplicon_stats[amplicon_name]["fwd_N"] = fwd_prim.count("N")
+        amplicon_stats[amplicon_name]["rev_N"] = rev_prim.count("N")
+
+        #
+        ## convert database data to BioPython Sequence objects
+        #
+        full_seqs = []
+        inter_primer_only = {}
+        for db_data in db_sequences:
+            genome, contig, start, end, strand, seq = db_data
+            
+            header = "genome={genome};contig={contig};location=[{start}:{end}];strand={strand}".format(genome=genome, contig=contig, start=start, end=end, strand=strand)
+            seq_obj = SeqRecord(seq=Seq(seq), id=header, description="")
+
+            # reverse complement if necessary
+            if strand == "-1":
+                seq_obj = seq_obj.reverse_complement()
+
+
+            # store one copy in full_seqs and one copy in inter_primer_only
+            full_seqs.append(seq_obj)
+            inter_primer_only[(genome, header)] = str(seq_obj[self.k:-self.k].seq)
+ 
+        #
+        ## Place each sequence into a cluster based on uniqueness
+        #
+        clusters = {}
+        cluster_counts = {}
+        cluster = 0
+        for key1, seq1 in inter_primer_only.items():
+
+            # skip seqs that already have cluster assigned
+            if key1 in clusters:
+                continue
+            else:
+                cluster += 1
+                clusters[key1] = str(cluster)
+                cluster_counts[cluster] = 1
+
+            for key2, seq2 in inter_primer_only.items():
+                if key1 is key2:
+                    continue
+
+                # skip seqs that have already been processed
+                elif key2 in clusters:
+                    continue
+
+                else:
+                    # check if the seqs are == 
+                    if seq1 == seq2:
+                        clusters[key2] = str(cluster)
+                        cluster_counts[cluster] += 1
+
+        # Find genomes that are parts of unique clusters
+        duplicated_genomes = 0
+        unique_genomes = set()     
+        genome_clusters = {}
+        for key in clusters:
+            genome, header = key
+
+            cluster = clusters[key]
+
+            if cluster_counts[int(cluster)] == 1:
+                unique_genomes.add(genome)
+            try:
+                genome_clusters[genome].append(clusters[key])
+                duplicated_genomes += 1
+            except KeyError:
+                genome_clusters[genome] = [clusters[key]]
+
+        amplicon_stats[amplicon_name]["num_genomes"] = len(genome_clusters)
+        amplicon_stats[amplicon_name]["num_unique"] = len(unique_genomes)
+        amplicon_stats[amplicon_name]["num_duplicates"] = duplicated_genomes
+        amplicon_stats[amplicon_name]["genome_clusters"] = genome_clusters
+
+        # check some standards to determine if this amp should be written
+        if amplicon_stats[amplicon_name]["num_genomes"] >= self.amp_write_genomes and \
+                amplicon_stats[amplicon_name]["num_unique"] >= self.amp_write_unique and \
+                amplicon_stats[amplicon_name]["num_duplicates"] <= self.amp_write_duplicates and \
+                amplicon_stats[amplicon_name]["fwd_N"] + amplicon_stats[amplicon_name]["rev_N"] <= self.amp_write_N:
+
+            with open(self.amplicon_dir + "/" + amplicon_name, 'w') as OUT:
+                SeqIO.write(full_seqs, OUT, "fasta")
+
+        return amplicon_stats
+
+
+class DatabaseRun(Database):
+    """ Represents a single query/run of the database """
+    
+    def __init__(self, main_db_f, output_dir, run_prefix, amp_min_len, amp_max_len, amp_frac_genomes): 
+
+        self.force = False
+
+        self.genomes = None
+        self.fuzzy = False
+
+        # Amplicon Stats
+        self.amp_min_len = amp_min_len
+        self.amp_max_len = amp_max_len
+        self.amp_frac_genomes = amp_frac_genomes
+
+
+        #
+        ## path vars
+        #
+        self.output_dir = output_dir
+        self.prefix = run_prefix
+        self.run_database_f = os.path.join(self.output_dir, self.prefix + ".db")
+        self.amplicon_dir = os.path.join(self.output_dir, self.prefix + ".amplicons", "")
+        self.amplicon_stats_f = os.path.join(self.output_dir, self.prefix + ".amplicon_stats.txt")
+        self.amplicon_matr_f = os.path.join(self.output_dir, self.prefix + ".amplicon_matrix.txt")
+
+
+        self.dbc = self._database_setup(main_db_f, self.run_database_f)
+
+    def _database_setup(self, main_db_f, run_db_f):
+        """ Open the main database and attach the run-specific database to it """
+        conn = self.open_database(main_db_f)
+        conn.execute("ATTACH '{}' AS run_specific".format(run_db_f))
+
+        return self._check_existing_params(conn)
+
+    def _check_existing_params(self, conn):
+        """ Checks the run_specific database for existing stats and make sure they match the stats of the current run """
+
+        # if force, drop all and return
+        if self.force:
+            LOG.info("Force option received: Overwriting run_specific tables if they exist.")
+            conn.execute("DROP TABLE IF EXISTS run_specific.*")
+
+    
+        # check if run has been done before
+        exists = conn.execute("SELECT name FROM run_specific.sqlite_master WHERE type='table' AND name='Params'").fetchall()
+
+        if exists == []:
+            # run is new, no further checks necessary
+            pass
+        else:
+            # run is existing, make sure params can be reused (are the same btw old run and this one)
+            conn.row_factory = sqlite3.Row
+            params = conn.execute("SELECT * FROM run_specific.Params").fetchall()[0]
+            conn.row_factory = None
+
+            try:
+                assert(params['amp_min_frac'] == self.amp_min_frac)
+                assert(params['amp_min_len'] == self.amp_min_len)
+                assert(params['amp_max_len'] == self.amp_max_len)
+
+            except AssertionError:
+                raise ValueError("Run specific database already exists with specified prefix. Parameters between run_specific database and the current run are different. Refusing to continue. Use -force to overwrite existing with current params.\n\nExisting params:\n{}".format(params))
+
+                
+            # we can return from here because we know params are the same
+            return conn
+
+    # make the params table before returning
+    conn.execute("CREATE TABLE run_specific.Params (min_genomes INTEGER, min_len INTEGER, max_len INTEGER)")
+    conn.execute("INSERT INTO run_specific.Params (min_genomes, min_len, max_len) VALUES (?, ?, ?)", (self.amp_genome_frac, self.min_len, self.max_len))
+
+    conn.commit()
+    return conn
+
+    def process(self):
+        """ Process the run recalculating as few steps as possible """
+
+        self.find_conserved_kmers()
+        self.find_potential_amplicons()
+
+        self.get_amplicon_stats()
+
+    def find_conserved_kmers(self):
+        """ Finds conserved kmers in all (default) or a specific set of genomes (specified by genomes argument) 
+        It would be nice to somehow filter out duplicates where duplicates = :
+            1. kmers that are consecutive in all genomes
+            2. fuzzy kmers that are logical duplicates (each perfectly matching kmer has something like 16 logical duplicates).
+        """
+        
+        # make a temporary table with only the genomes we want to include
+        # If genomes not specified, this table will be an exact clone of Genomes
+        #self.dbc.execute(""" DROP TABLE IF EXISTS SubGen """)
+        self.dbc.execute("""CREATE TABLE run_specific.SubGen (
+                        id INTEGER PRIMARY KEY NOT NULL,
+                        name STRING
+                        );
+                        """)
+        if genomes:
+            self.dbc.execute("""INSERT INTO SubGen (id, name)
+                            SELECT id, name FROM Genomes
+                            WHERE Genomes.id IN ({ph})
+                            """.format(ph=",".join(["?"]*len(genomes))), genomes)
+        else:
+            self.dbc.execute("""INSERT INTO SubGen (id, name)
+                            SELECT id, name FROM Genomes
+                            """)
+ 
+        return
+
+        # Make a temporary table to hold the conserved Kmers
+        #self.dbc.execute("DROP TABLE IF EXISTS ConservedKmers")
+
+        self.dbc.execute("""
+                CREATE TABLE run_specific.ConservedKmers (
+                id INTEGER PRIMARY KEY NOT NULL,
+                kmer INTEGER NOT NULL,
+                genome INTEGER NOT NULL,
+                contig INTEGER NOT NULL,
+                start INTEGER NOT NULL,
+                strand INTEGER NOT NULL
+                );
+                """)
+
+
+        if fuzzy:
+            # select fuzzy kmers that are present in all genomes
+            LOG.debug("Finding conserved fuzzy kmers...")
+
+            self.dbc.execute("""
+                    -- Insert results into the temp table
+                    INSERT INTO ConservedKmers (kmer, genome, contig, start, strand) 
+                    
+                    -- Select from Location
+                    SELECT cons_kmer, Contigs.genome, Locations.contig, Locations.start, Locations.strand 
+                    FROM Locations 
+
+                    -- join Contigs to be able to join SubGen
+                    INNER JOIN Contigs 
+                        ON Contigs.id = Locations.contig 
+                    
+                    -- join SubGen to check genome number
+                    INNER JOIN SubGen
+                        ON Contigs.genome = SubGen.id
+
+
+                    -- join with a select that checks  all genomes represented
+                    INNER JOIN (
+                            SELECT FuzzyKmers.id cons_kmer, KmerToFuzzy.kmer as fkmer
+                            FROM FuzzyKmers
+
+                            -- join KmerToFuzzy to get the kmers each fuzzy represents
+                            INNER JOIN KmerToFuzzy
+                                ON FuzzyKmers.id = KmerToFuzzy.fuzzy
+
+                            -- join locations to get counts
+                            INNER JOIN Locations
+                                ON KmerToFuzzy.kmer = Locations.kmer
+
+                            -- join contigs to get genomes
+                            INNER JOIN Contigs 
+                                ON Locations.contig = Contigs.id 
+
+                            -- group by fuzzy kmer
+                            GROUP BY FuzzyKmers.id
+
+                            -- contrain to all genomes represented
+                            HAVING COUNT(DISTINCT Contigs.genome) = (SELECT COUNT(*) FROM SubGen)) 
+                        ON Locations.kmer = fkmer
+
+               """)
+
+
+        else:
+
+            # select kmers that are present in all genomes
+            LOG.debug("Finding conserved kmers...")
+
+            self.dbc.execute("""
+                    -- insert results into temp table
+                    INSERT INTO ConservedKmers (kmer, genome, contig, start, strand) 
+                    
+                    -- select from locations
+                    SELECT Locations.kmer, Contigs.genome, Locations.contig, Locations.start, Locations.strand 
+                    FROM Locations 
+
+                    -- join contigs to be able to join SubGen
+                    INNER JOIN Contigs 
+                        ON Contigs.id = Locations.contig 
+
+                    -- join subgen to limit to only required genomes
+                    INNER JOIN SubGen
+                        ON Contigs.genome = SubGen.id
+
+                    -- join to select that check for kmers in all genomes
+                    INNER JOIN (
+                            SELECT Locations.kmer ckmer 
+                            FROM Locations 
+
+                            -- join contigs to get genome
+                            JOIN Contigs 
+                                ON Locations.contig = Contigs.id
+
+                            -- collapse around kmers
+                            GROUP BY Locations.kmer 
+
+                            -- contrain to only kmers found in all genomes
+                            HAVING COUNT(DISTINCT Contigs.genome) = (SELECT COUNT(*) FROM SubGen)) 
+                        ON Locations.kmer = ckmer
+                """)
+
+        self.dbc.commit()
+
+    def find_potential_amplicons(self):
+        """ Finds all potential amplicons from conserved kmers 
+        
+        TODO: Add k to length calculations to get actual length
+        """
+
+        if min_genomes is None:
+            min_genomes = "(SELECT COUNT(*) FROM SubGen)"
+
+        if self.fuzzy:
+            kmer_table = "FuzzyKmers"
+        else:
+            kmer_table = "Kmers"
+
+        LOG.info("Making amplicons table...")
+
+        # -- create temporary table 
+        self.dbc.execute("""
+                -- make temporary table
+                CREATE TEMPORARY TABLE run_specific.temp_amplicons AS 
+                
+                -- populate it from this select
+                SELECT A.kmer AS kmer1, B.kmer AS kmer2, A.start as start1, B.start as start2, A.genome AS genome, A.contig AS contig, A.strand AS strand 
+                
+                FROM ConservedKmers A 
+                
+                -- self join to compare pairwise
+                INNER JOIN ConservedKmers B 
+                    ON (
+                        -- contig and strand must be the same
+                        A.contig = B.contig AND 
+                        A.strand = B.strand AND 
+                        
+                        -- distance must be appropriate and consistent with strand
+                        (
+                            (A.strand = '1' AND B.start - A.start BETWEEN {min_length} AND {max_length}) 
+                        OR 
+                            (A.strand = '-1' AND A.start - B.start BETWEEN {min_length} AND {max_length})
+                        )
+
+                        -- no self matches
+                        AND A.kmer != B.kmer
+                    )
+                """.format(self=self))
+
+        LOG.debug("temp_amplicons made... finishing table...")
+
+
+        # -- query temporary table
+        #self.dbc.execute("DROP TABLE IF EXISTS Amplicons")
+        # this statement appends columns for num_genomes and num_total
+        self.dbc.execute("""
+                -- create a table
+                CREATE TABLE run_specific.Amplicons AS 
+                
+                    -- populate it with the results from this select
+                    SELECT K1.name AS kmer1, K2.name AS kmer2, tmp_amp.start1, tmp_amp.start2, tmp_amp.genome, tmp_amp.contig, tmp_amp.strand, num_genomes, num_total 
+                    
+                    FROM temp_amplicons tmp_amp 
+                   
+                    -- join with some counts
+                    INNER JOIN 
+                        (SELECT temp_amplicons.kmer1 AS ta1, temp_amplicons.kmer2 AS ta2, COUNT(DISTINCT temp_amplicons.genome) AS num_genomes, COUNT(*) AS num_total 
+                    
+                        FROM temp_amplicons 
+                        
+                        -- group by amplicon
+                        GROUP BY temp_amplicons.kmer1, temp_amplicons.kmer2 
+                        
+                        -- require a minimum number of genomes
+                        HAVING num_genomes >= {min_genomes}) 
+                    
+                        -- merge counts with original table
+                        ON tmp_amp.kmer1 = ta1 AND tmp_amp.kmer2 = ta2 
+                    
+                    -- join with specified kmer table to get kmer1 sequence
+                    INNER JOIN {kmer_table} as K1 
+                        ON tmp_amp.kmer1 = K1.id 
+                    
+                    -- join with specified kmer table to get kmer2 sequence
+                    INNER JOIN {kmer_table} as K2 
+                        ON tmp_amp.kmer2 = K2.id 
+                        """.format(kmer_table=kmer_table, min_genomes=self.min_genomes))
+
+        # drop the temporary table
+        self.dbc.execute("DROP TABLE temp_amplicons")
+
+        # add an index to amplicons
+        self.dbc.execute("CREATE INDEX amplicon_indx on Amplicons (kmer1, kmer2)")
+
+        self.dbc.commit()
+
+    def get_amplicon_stats(self):
+
+        LOG.info("Checking amplicons and getting stats...")
+        cursor = self.dbc.execute("SELECT SubGen.name FROM SubGen ORDER BY SubGen.name")
+        genome_names = [str(itm[0]) for itm in cursor.fetchall()]
+
+      
+        # set some stats for writing amplicons
+        self.amp_write_genomes = len(genome_names)
+        self.amp_write_unique = len(genome_names)
+        self.amp_write_duplicates = 0
+        self.amp_write_N = 99
+
+
+        # make amplicon directory if it doesn't exist
+        if not os.path.isdir(self.amplicon_dir):
+            os.mkdir(self.amplicon_dir)
+
+        ordered_matches = "SELECT Amplicons.kmer1, Amplicons.kmer2 FROM Amplicons GROUP BY Amplicons.kmer1, Amplicons.kmer2 ORDER BY num_genomes DESC, num_total ASC"
+
+        cursor = self.dbc.execute(ordered_matches)
+
+        amplicon_stats = {}
+        for result in lazy_imap(self.threads, self.check_amplicon, self.generate_amp_packages(cursor)):
+            print(result)
+            amplicon_stats.update(result)
+
+
+        # sort the amplicons by num unique_genomes number (descending) and number of N's(ascending), and then num duplicates
+        sorted_amplicons = sorted(amplicon_stats, key=lambda amp_id: (-1 * amplicon_stats[amp_id]["num_unique"], amplicon_stats[amp_id]["fwd_N"] + amplicon_stats[amp_id]["rev_N"], amplicon_stats[amp_id]["num_duplicates"]))
+
+
+        with open(self.amplicon_stats_f, 'w') as STATS, open(self.amplicon_matr_f, 'w') as MATR:
+            # write headers to both files
+            STATS.write("\t".join(("amplicon", "num_genomes", "num_unique", "num_duplicates", "fwd_N", "rev_N")) + "\n")
+            MATR.write("\t".join(["amplicon"] + list(genome_names)) + "\n")
+
+            for amp in sorted_amplicons:
+                # k for key not length of kmer
+                write_stats = [str(amp)] + [str(amplicon_stats[amp][k]) for k in ["num_genomes", "num_unique", "num_duplicates", "fwd_N", "rev_N"]]
+                write_matr = [str(amp)]
+                for name in genome_names:
+                    try:
+                        write_matr.append(";".join(amplicon_stats[amp]["genome_clusters"][name]))
+                    except KeyError:
+                        write_matr.append("0")
+
+                STATS.write("\t".join(write_stats) + "\n")
+                MATR.write("\t".join(write_matr) + "\n")
+
+    def generate_amp_packages(self, cursor):
+        """ Generates so-called "amplicon packages" from a cursor that selects amplicons """
+
+        amp_id = 0
+        for batch in self._iter_sql_results(cursor, 100):
+            for amp in batch:
+                amp_id += 1
+                k1, k2 = amp
+
+                seqs = self.dbc.execute("""
+                        SELECT Genomes.name, Contigs.name, Amplicons.start1 as start, Amplicons.start2 + {k} as end, Amplicons.strand, SUBSTR(Sequences.seq, Amplicons.start1 + 1, Amplicons.start2 + {k} - Amplicons.start1) 
+                        
+                        FROM Amplicons 
+                        
+                        INNER JOIN Genomes 
+                            ON Amplicons.genome = Genomes.id 
+                        
+                        INNER JOIN Contigs 
+                            ON Amplicons.contig = Contigs.id 
+                        
+                        INNER JOIN Sequences 
+                            ON Amplicons.contig = Sequences.id WHERE Amplicons.kmer1 = '{k1}' 
+                            AND Amplicons.kmer2 = '{k2}'
+                        
+                        """.format(k=self.k, k1=k1, k2=k2)).fetchall()
+                yield (amp_id, k1, k2, seqs)
+
+    def check_amplicon(self, amp_package):
+        """ Checks amplicons and returns a dict of amplicon stats """
+        
+        # unpack the package
+        amp_id, fwd_prim, rev_prim, db_sequences = amp_package
+
+        amplicon_name = "amp{amp_id}_{fwd_prim}-{rev_prim}.fasta".format(amp_id=amp_id, fwd_prim=fwd_prim, rev_prim=rev_prim)
+        # initialize the results dict
+        amplicon_stats = {amplicon_name: {}}
+
+        amplicon_stats[amplicon_name]["fwd_N"] = fwd_prim.count("N")
+        amplicon_stats[amplicon_name]["rev_N"] = rev_prim.count("N")
+
+        #
+        ## convert database data to BioPython Sequence objects
+        #
+        full_seqs = []
+        inter_primer_only = {}
+        for db_data in db_sequences:
+            genome, contig, start, end, strand, seq = db_data
+            
+            header = "genome={genome};contig={contig};location=[{start}:{end}];strand={strand}".format(genome=genome, contig=contig, start=start, end=end, strand=strand)
+            seq_obj = SeqRecord(seq=Seq(seq), id=header, description="")
+
+            # reverse complement if necessary
+            if strand == "-1":
+                seq_obj = seq_obj.reverse_complement()
+
+
+            # store one copy in full_seqs and one copy in inter_primer_only
+            full_seqs.append(seq_obj)
+            inter_primer_only[(genome, header)] = str(seq_obj[self.k:-self.k].seq)
+ 
+        #
+        ## Place each sequence into a cluster based on uniqueness
+        #
+        clusters = {}
+        cluster_counts = {}
+        cluster = 0
+        for key1, seq1 in inter_primer_only.items():
+
+            # skip seqs that already have cluster assigned
+            if key1 in clusters:
+                continue
+            else:
+                cluster += 1
+                clusters[key1] = str(cluster)
+                cluster_counts[cluster] = 1
+
+            for key2, seq2 in inter_primer_only.items():
+                if key1 is key2:
+                    continue
+
+                # skip seqs that have already been processed
+                elif key2 in clusters:
+                    continue
+
+                else:
+                    # check if the seqs are == 
+                    if seq1 == seq2:
+                        clusters[key2] = str(cluster)
+                        cluster_counts[cluster] += 1
+
+        # Find genomes that are parts of unique clusters
+        duplicated_genomes = 0
+        unique_genomes = set()     
+        genome_clusters = {}
+        for key in clusters:
+            genome, header = key
+
+            cluster = clusters[key]
+
+            if cluster_counts[int(cluster)] == 1:
+                unique_genomes.add(genome)
+            try:
+                genome_clusters[genome].append(clusters[key])
+                duplicated_genomes += 1
+            except KeyError:
+                genome_clusters[genome] = [clusters[key]]
+
+        amplicon_stats[amplicon_name]["num_genomes"] = len(genome_clusters)
+        amplicon_stats[amplicon_name]["num_unique"] = len(unique_genomes)
+        amplicon_stats[amplicon_name]["num_duplicates"] = duplicated_genomes
+        amplicon_stats[amplicon_name]["genome_clusters"] = genome_clusters
+
+        # check some standards to determine if this amp should be written
+        if amplicon_stats[amplicon_name]["num_genomes"] >= self.amp_write_genomes and \
+                amplicon_stats[amplicon_name]["num_unique"] >= self.amp_write_unique and \
+                amplicon_stats[amplicon_name]["num_duplicates"] <= self.amp_write_duplicates and \
+                amplicon_stats[amplicon_name]["fwd_N"] + amplicon_stats[amplicon_name]["rev_N"] <= self.amp_write_N:
+
+            with open(self.amplicon_dir + "/" + amplicon_name, 'w') as OUT:
+                SeqIO.write(full_seqs, OUT, "fasta")
+
+        return amplicon_stats
+
+
 
 
 class KCounter(multiprocessing.Process):
@@ -526,7 +1479,100 @@ class KCounter(multiprocessing.Process):
         # reset the variables
         self.locations = []
         self.kmers = {}
-        
+       
+
+def lazy_imap(processes, function, iterable):
+    """ 
+     Analog of pool.imap that behaves lazily to save memory 
+    
+    This exploits queue sizes to try to maximize parallelization while minimizing memory.
+
+    The results queue can only hold one completed result per process on the idea that there is no point in having a large queue for the main thread to read from.
+
+    The input queue to the processes only holds processes * 2 items on the idea that there is no point in having a large input queue if the processes are blocked until the results queue is dumped. This helps to ensure that the input queue doesn't fill up in cases of huge iteration.
+
+    The main thread starts the workers and then primes the input queue with 2X processes tasks. Then it enters a loop until all tasks are done that adds a task if there are any remaining and yields a result.
+
+
+    If the workers move faster than the main thread, they will be mostly blocked waiting for an open slot in the results queue. 
+
+    If the main thread works faster than the workers, it will be mostly blocked waiting for a result to appear.
+    """
+
+    input_queue = multiprocessing.Queue()
+    results_queue = multiprocessing.Queue(processes)
+
+    # spawn workers
+    workers = []
+    for indx in range(processes):
+        worker = ImapWorker("ImapWorker{}".format(indx), input_queue, results_queue, function)
+        worker.start()
+        workers.append(worker)
+
+    # ensure the input type is an iterable 
+    batch_iter = iter(iterable)
+
+    # keep track of how many batches we are waiting for
+    batches_in_progress = 0
+
+    LOG.debug("Priming batch iterator...")
+    for _ in range(processes * 2):
+        try:
+            input_queue.put(next(batch_iter))
+            batches_in_progress += 1
+        except StopIteration:
+            batch_iter = None
+            break
+
+    LOG.debug("Yielding Results...")
+    while batches_in_progress != 0:
+        # check if there are remaining items to be added to the input
+        if batch_iter is not None:
+            try:
+                input_queue.put(next(batch_iter))
+                batches_in_progress += 1
+            except StopIteration:
+                batch_iter = None
+
+        # wait for a result
+        yield results_queue.get()
+        batches_in_progress -= 1
+
+    for _ in workers:
+        input_queue.put("STOP")
+
+    for worker in workers:
+        LOG.debug("Waiting for {} to join...".format(worker.name))
+        worker.join()
+
+class ImapWorker(multiprocessing.Process):
+    """ A worker for the lazy_imap function """
+    
+    def __init__(self, name, input_queue, results_queue, function):
+        super().__init__()
+
+        self.name = name
+        self.input_queue = input_queue
+        self.results_queue = results_queue
+        self.function = function
+
+    def run(self):
+        LOG.debug("Starting process {}".format(self.name)) 
+        while True:
+
+            # pull an item off the input queue
+            itm = self.input_queue.get()
+
+            # check for poison pill
+            if itm == "STOP":
+                LOG.debug("Returning from {}".format(self.name))
+                return
+            else:
+                # run some function on the item and put the result in the results queue
+                result = self.function(itm)
+                self.results_queue.put(result)
+
+
 
 #=====================================================
 
@@ -2299,14 +3345,56 @@ def main(fastas, k):
 def main_database(fastas, k, threads=8):
     counter = KmerCounterSQL("kmer_db", k, threads)
 
-    counter.count_kmers(fastas)
-    counter.generate_fuzzy_kmers()
+    #counter.count_kmers(fastas)
+    #counter.generate_fuzzy_kmers()
+    counter.find_conserved_kmers(fuzzy=False)
+    #counter.find_potential_amplicons()
+    counter.get_amplicon_stats()
+
+def subcommand_main(args):
+    main_db = MainDatabase(args.db, args.k, args.threads, args.mismatches, args.stable)  
+
+    main_db.count_kmers(args.fastas, recalculate=args.force)
+
+    if args.fuzzy:
+        main_db.generate_fuzzy_kmers(recalculate=args.force)
+
+def subcommand_run(args):
+    run_handler = DatabaseRun(args.db, args.output_dir, args.prefix, args.amp_min_len, args.amp_max_len, args.amp_frac_genomes) 
+
+    counter.find_conserved_kmers(fuzzy=args.fuzzy)
+    counter.find_potential_amplicons()
+    counter.get_amplicon_stats()
+
+    
+
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("-fastas", help="a bunch of fastas to compare", nargs="+", required=True)
-    parser.add_argument("-k", help="value of k to use", required=True, type=int)
-    args = parser.parse_args()
+    parser.add_argument("-db", help="path to a new/existing main database", required=True)
+    parser.add_argument("-force", help="force overwriting existing paths", action="store_true")
+    parser.add_argument("-threads", help="number of processes to use [%(default)s]", default=1, type=int)
+    parser.add_argument("-fuzzy", help="use fuzzy tables with a particular number of mismatches (default is to not use fuzzy kmers because this is much faster", action="store_true")
+    parser.add_argument("-mismatches", help="number of mismatches to allow in fuzzy kmers [%(default)s]", default=1)
+    parser.add_argument("-stable", help="number of bp at each end to not allow to be fuzzy [%(default)s]", default=2)
+    parser.add_argument("-skip_fuzzy", help="when this flag is set, skip calculation of the fuzzy kmer database (a long step)", action="store_true")
 
-    #main(args.fastas, args.k)
-    main_database(args.fastas, args.k)
+    subparsers = parser.add_subparsers()
+
+    parser_main = subparsers.add_parser("main")
+    parser_main.set_defaults(func=subcommand_main)
+    parser_main.add_argument("-fastas", help="a bunch of fastas to compare", nargs="+", required=True)
+    parser_main.add_argument("-k", help="value of k to use", required=True, type=int)
+
+
+    parser_run = subparsers.add_parser("run")
+    parser_run.set_defaults(func=subcommand_run)
+    parser_run.add_argument("-output_dir", help="the directory in which to store the outputi [%(default)s]", default=os.getcwd())
+    parser_run.add_argument("-prefix", help="a run specific prefix (this will be the base filename for all files [%(default)s]", default="run")
+    parser_run.add_argument("-genomes", help="genome names from the main table to include in this run", nargs='+')
+    parser_run.add_argument("-amp_frac_genomes", help="minimum fraction of genomes required to be a good amplicon [default is present in all genomes]")
+    parser_run.add_argument("-amp_min_len", help="heuristic minimum amplicon length to narrow results [%(default)s]", default=100)
+    parser_run.add_argument("-amp_max_len", help="maximum amplicon length [%(default)s]", default=400)
+    args = parser.parse_args()
+    args.func(args)
