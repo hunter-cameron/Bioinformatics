@@ -1,4 +1,12 @@
 
+description = """
+Author: Hunter Cameron
+Date: December 2015
+Description:
+Small utility for extracting 16S genes from one or more 
+barrnap *.gff files.
+"""
+
 import argparse
 from Bio import SeqIO
 import os
@@ -33,7 +41,7 @@ class Gene(object):
 
 
 def parse_gff(gff_f):
-    """ Parses the GFF and returns a list gene object for the things annotated as 16S """
+    """ Parses the GFF and returns a list of Gene objects for the things annotated as 16S """
 
     genes = []
     with open(gff_f, 'r') as IN:
@@ -67,6 +75,8 @@ def parse_gff(gff_f):
 def get_genes_from_fasta(fasta_f, genes):
     with open(fasta_f, 'r') as IN:
         contigs = []
+
+        # cycle through contigs in the file and write all the genes from each
         for record in SeqIO.parse(IN, "fasta"):
             contigs.append(record.id)
             genes_in_this_contig = [gene for gene in genes if gene.contig == record.id]
@@ -85,7 +95,7 @@ def get_genes_from_fasta(fasta_f, genes):
 
 if __name__ == "__main__":
 
-    parser = argparse.ArgumentParser(description="Extracts 16S sequences from one or more barrnap GFF file.")
+    parser = argparse.ArgumentParser(description=description)
     parser.add_argument("-gffs", help="gff files, name should be name.gff", nargs="+", required=True)
     parser.add_argument("-fastas", help="fasta files, name should be name.fasta", nargs="+", required=True)
     parser.add_argument("-out", help="path for a fasta of 16S sequences")

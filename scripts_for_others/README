@@ -9,6 +9,15 @@ attention.
 
 Current Scripts in this Directory:
 
+compare_two_lists.py        Simple utility to compare the content of two lists.
+                            Reports items that on both lists and unique to
+                            either list.
+
+extract_16S_from_barrnap_gff.py
+
+                            Extracts 16S sequences from a barrnap-created
+                            *.gff file.
+
 jgi_interface.py            Script to log in and download files from the JGI
                             or IMG websites. For documentation, run using the
                             '-h' option.
