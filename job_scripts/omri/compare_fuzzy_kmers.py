@@ -4,7 +4,6 @@ import os
 import sys
 import math
 import time
-from mypyli import jellyfish
 import numpy as np
 import logging
 import re
@@ -35,6 +34,8 @@ LOG.setLevel("DEBUG")
 I also suspect that this program may not be accounting for reverse complements.
 
 TODO: Print some final stats about amplicons (number unique, etc).
+
+NOTE: Changing the sqlite3 row factory to sqlite3.Row messes up multiprocessing. If I need the Row class, I should make sure to set it back to the default None before moving on. 
 
 """
 
@@ -94,6 +95,32 @@ class Database(object):
             else:
                 yield results
 
+    
+    def lookup_param(self, key):
+        """ Lookup a param in the Params table by a given key. Returns a list for keys that have multiple values, a single value for keys that have one value, or None for keys that are not in the database """
+
+        results = self.dbc.execute("SELECT value FROM Params WHERE key = '{}'".format(key)).fetchall()
+
+        if len(results) == 0:
+            return None
+        elif len(results) == 1:
+            # unpack the first result (a tuple) and then unpack the first (and only) element from the tuple
+            # try to return it as a type that makes sense (float for number, else string)
+            try:
+                return float(results[0][0])
+            except ValueError:
+                return results[0][0]
+        elif len(results) > 1:
+            # unpack each result and try to convert to sensible types
+            all_results = []
+            for result in results:
+                try:
+                    all_results.append(float(result[0]))
+                except ValueError:
+                    all_results.append(result[0])
+
+            return all_results
+
 
 class MainDatabase(Database):
     """
@@ -108,9 +135,6 @@ class MainDatabase(Database):
         self.threads = threads
         self.mismatches = mismatches
 
-        # set a flag to be used to bypass fuzzy kmer creation if no new genomes are added
-        self.changed = False
-
         # stables are # bases at beginning and end that cannot be mismatches
         self.stable_bp = stable_bp
 
@@ -122,73 +146,35 @@ class MainDatabase(Database):
             self.init_database(self.dbc)
             self.make_SQL_tables()
 
-    #
-    # These check methods cause a later multiprocessing step to break when pulling off queues
-    #
-
-    """
-    
-    These check methods cause a later multiprocessing step to break when pulling off queues
-
-    This is the error it gives me. I don't know why it would give this error as it seems to be an internal error...
-
-    Traceback (most recent call last):
-    File "/nas02/home/h/j/hjcamero/anaconda/envs/py3k/lib/python3.4/multiprocessing/process.py", line 254, in _bootstrap
-    self.run()
-    File "/nas02/home/h/j/hjcamero/scripts/job_scripts/omri/compare_fuzzy_kmers.py", line 1544, in run
-    itm = self.input_queue.get()
-    File "/nas02/home/h/j/hjcamero/anaconda/envs/py3k/lib/python3.4/multiprocessing/queues.py", line 115, in get
-    return ForkingPickler.loads(res)
-    TypeError: function takes exactly 2 arguments (0 given)
-
-
-
-    #### Changing the row_factory back to None solves the issue.
-      
-    """
 
     def check_recount(self):
         """ Returns True if kmers need to be recounted """
-        self.dbc.row_factory = sqlite3.Row
 
-        params = self.dbc.execute("SELECT * FROM Params").fetchall()[0]
-
-        # for some reason, multiprocessing breaks if row_factory is sqlite3.Row
-        self.dbc.row_factory = None
-
-        if self.k == params["k"]:
+        if self.k == self.lookup_param("k"):
             return False
         else:
             return True
-
 
     def check_refuzzify(self):
         """ Returns True is fuzzy kmers need to be recalculated """
-        self.dbc.row_factory = sqlite3.Row
 
-        params = self.dbc.execute("SELECT * FROM Params").fetchall()[0]
-
-        # for some reason, multiprocessing breaks if row_factory is sqlite3.Row
-        self.dbc.row_factory = None
- 
-        if self.k == params["k"] and self.mismatches == params["mismatches"] and self.stable_bp == params["stable_bp"]:
+        if self.k == self.lookup_param("k") and self.mismatches == self.lookup_param("mismatches") and self.stable_bp == self.lookup_param("stable_bp"):
             return False
         else:
             return True
-
 
     def make_SQL_tables(self):
         """ Makes SQL tables corresponding to all the info I want """
 
         # create table that holds the params
         self.dbc.execute(""" CREATE TABLE Params (
-                        k INTEGER,
-                        mismatches INTEGER,
-                        stable_bp INTEGER
+                        key TEXT,
+                        value TEXT,
+                        UNIQUE(key, value) ON CONFLICT IGNORE
                         );
                         """)
 
-        self.dbc.execute(""" INSERT INTO Params (k, mismatches, stable_bp) VALUES (?, ?, ?)""", (self.k, self.mismatches, self.stable_bp))
+        self.dbc.executemany(""" INSERT INTO Params (key, value) VALUES (?, ?)""", (("k", self.k), ("mismatches", self.mismatches), ("stable_bp", self.stable_bp)))
 
         # create table that holds the genome names
         self.dbc.execute("""CREATE TABLE Genomes (
@@ -267,33 +253,6 @@ class MainDatabase(Database):
                 for kmer in cls._recurse_all_kmers(k, curseq + nt):
                     yield kmer
 
-
-    def process(self, fastas):
-        """ Shortcut method for counting kmers, making fuzzy kmers (if necessary) and looking for amplicons """
-        self.count_kmers(fastas)
-
-        # somehow I need to determine if I need to recalculate or not        
-        # also would be nice to not do this automatically in case allowed mismatches is 0
-        # distinction between calculating the fuzzy table and the number of mismatches to be allowed for the present run.
-        # don't want to run into problems if first ran with mismatches = 0 and then retry with 1 and not calc table because no changes. Would be optimal to if the fuzzy table has been made and how many errors it has been made with.
-        # perhaps I need a metadata table to store such things
-        # maybe I can compile multiple fuzzy kmer tables...
-        # for now, I'll just always run it with a single fuzzy kmer
-        self.generate_fuzzy_kmers()
-
-
-        """
-        I'd like finding amplicons to be a two-step process, first look without fuzzy, then look with fuzzy
-
-        If sufficient results are found without fuzzy, it would be a waste of time and give worse results to fun fuzzy
-
-
-        Need to make get_amplicon_stats report counts that can be evaluated before doing fuzzy stuff.
-        """
-        counter.find_conserved_kmers(fuzzy=True)
-        counter.find_potential_amplicons()
-        counter.get_amplicon_stats()
-
     def count_kmers(self, fastas, recalculate=False):
         """
         The counter here should do nothing but update the database.
@@ -301,15 +260,16 @@ class MainDatabase(Database):
         In multiple other threads the counter should be running counting kmers and should return multiple lists of tuples. The first contains all the unique kmers that need to be in kmers and the second contains Locations for the counted segment.
         """
 
-        if self.check_recount() and not recalculate:
-            raise ValueError("Kmers need to be recounted (current params don't match database params) but -force was not supplied.")
+        if self.check_recount():
+            if recalculate:
+                LOG.warning("Kmers need to be recounted. Got the -force option. Overwriting existing db.")
+                self.dbc.execute("DELETE FROM Genomes")
+                self.dbc.execute("DELETE FROM Contigs")
+                self.dbc.execute("DELETE FROM Sequences")
+                self.dbc.execute("DELETE FROM Kmers")
 
-        # if we get the recalculate option, erase everything
-        if recalculate:
-            self.dbc.execute("DELETE FROM Genomes")
-            self.dbc.execute("DELETE FROM Contigs")
-            self.dbc.execute("DELETE FROM Sequences")
-            self.dbc.execute("DELETE FROM Kmers")
+            else:
+                raise ValueError("Kmers need to be recounted (current params don't match database params) but -force was not supplied.")
 
         input_queue = multiprocessing.Queue()
         results_queue = multiprocessing.Queue(15)
@@ -330,7 +290,6 @@ class MainDatabase(Database):
                 continue
             else:
                 LOG.info("Counting kmers for {}".format(genome_name))
-                self.changed = True
 
             # add fasta to the database and get the genome index
             genome_id = self._add_genome(genome_name)
@@ -918,20 +877,32 @@ class MainDatabase(Database):
 
 
 class DatabaseRun(Database):
-    """ Represents a single query/run of the database """
+    """ Represents a single query/run of the database 
     
-    def __init__(self, main_db_f, output_dir, run_prefix, amp_min_len, amp_max_len, amp_frac_genomes): 
+    I need a new way of getting/setting/saving params. I want the run_db.Params table to represent everything about the run:
 
-        self.force = False
+        - genomes included
+        - fuzzy
+        - amp min len
+        - amp max len
+        - amp frac genomes
 
-        self.genomes = None
-        self.fuzzy = False
+        and perhaps also the write params.
 
-        # Amplicon Stats
-        self.amp_min_len = amp_min_len
-        self.amp_max_len = amp_max_len
-        self.amp_frac_genomes = amp_frac_genomes
+    Given that genomes included will be more than one, I think I need to change the Params schema to be a k: v system where I have something like index:key:value and a table would look like this:
 
+        1:genome:Gen1
+        2:genome:Gen2
+        3:fuzzy:True
+        4:amp_min_len:100
+        5:amp_max_len:400
+        etc...
+    
+    """
+    
+    def __init__(self, main_db_f, output_dir, run_prefix, threads): 
+
+        self.threads = threads
 
         #
         ## path vars
@@ -944,57 +915,100 @@ class DatabaseRun(Database):
         self.amplicon_matr_f = os.path.join(self.output_dir, self.prefix + ".amplicon_matrix.txt")
 
 
-        self.dbc = self._database_setup(main_db_f, self.run_database_f)
+        self.dbc = self.open_database(main_db_f)
 
-    def _database_setup(self, main_db_f, run_db_f):
-        """ Open the main database and attach the run-specific database to it """
-        conn = self.open_database(main_db_f)
-        conn.execute("ATTACH '{}' AS run_specific".format(run_db_f))
+    def _attach_run_db(self, force):
+        """ Attached the run_specific db and checks if the file exists."""
 
-        return self._check_existing_params(conn)
+        if os.path.exists(self.run_database_f):
+            # if force, remove the run_specific database
+            if force:
+                LOG.info("Force option received: Overwriting run_specific tables if they exist.")
+                os.unlink(self.run_database_f)
+            else:
+                raise ValueError("Run databse already exists. Refusing to overwrite without the -force option. It is recommended to just specify a different -prefix")
 
-    def _check_existing_params(self, conn):
-        """ Checks the run_specific database for existing stats and make sure they match the stats of the current run """
+        # attach the run_specific database
+        self.dbc.execute("ATTACH '{}' AS run_specific".format(self.run_database_f))
+ 
+        # make params table if it doesn't exist
+        exists = self.dbc.execute("SELECT name FROM run_specific.sqlite_master WHERE type='table' AND name='Params'").fetchone()
 
-        # if force, drop all and return
-        if self.force:
-            LOG.info("Force option received: Overwriting run_specific tables if they exist.")
-            conn.execute("DROP TABLE IF EXISTS run_specific.*")
+        if exists is None:
+            # run is new, make the params table
+            self.dbc.execute("CREATE TABLE run_specific.Params (key, value, UNIQUE (key, value) ON CONFLICT IGNORE)")
+            self.dbc.commit()
 
-    
-        # check if run has been done before
-        exists = conn.execute("SELECT name FROM run_specific.sqlite_master WHERE type='table' AND name='Params'").fetchall()
+    def add_params_to_database(self, **params):
+        """ adds params to database where params is a bunch of keyword args """
+        self.dbc.executemany("INSERT INTO run_specific.params (key, value) VALUES (?, ?)", [(k, v) for k, v in params.items()])
+        
+        self.dbc.commit()
 
-        if exists == []:
-            # run is new, no further checks necessary
-            pass
-        else:
-            # run is existing, make sure params can be reused (are the same btw old run and this one)
-            conn.row_factory = sqlite3.Row
-            params = conn.execute("SELECT * FROM run_specific.Params").fetchall()[0]
-            conn.row_factory = None
+    def lookup_param(self, key):
+        """ Lookup a param in the Params table by a given key. Returns a list for keys that have multiple values, a single value for keys that have one value, or None for keys that are not in the database """
 
+        results = self.dbc.execute("SELECT value FROM run_specific.Params WHERE key = '{}'".format(key)).fetchall()
+
+        if len(results) == 0:
+            return None
+        elif len(results) == 1:
+            # unpack the first result (a tuple) and then unpack the first (and only) element from the tuple
+            # try to return it as a type that makes sense (float for number, else string)
             try:
-                assert(params['amp_min_frac'] == self.amp_min_frac)
-                assert(params['amp_min_len'] == self.amp_min_len)
-                assert(params['amp_max_len'] == self.amp_max_len)
+                return float(results[0][0])
+            except ValueError:
+                return results[0][0]
+        elif len(results) > 1:
+            # unpack each result and try to convert to sensible types
+            all_results = []
+            for result in results:
+                try:
+                    all_results.append(float(result[0]))
+                except ValueError:
+                    all_results.append(result[0])
 
-            except AssertionError:
-                raise ValueError("Run specific database already exists with specified prefix. Parameters between run_specific database and the current run are different. Refusing to continue. Use -force to overwrite existing with current params.\n\nExisting params:\n{}".format(params))
+            return all_results
 
-                
-            # we can return from here because we know params are the same
-            return conn
+    def check_previous_run(self):
+        """ Checks the params used in a previous run in the same run_db to see if it is possible to reuse some data. This is not implemented yet.
+        """
+        # before starting, it is important to check a few basic things to see if any of the run can be resused
 
-    # make the params table before returning
-    conn.execute("CREATE TABLE run_specific.Params (min_genomes INTEGER, min_len INTEGER, max_len INTEGER)")
-    conn.execute("INSERT INTO run_specific.Params (min_genomes, min_len, max_len) VALUES (?, ?, ?)", (self.amp_genome_frac, self.min_len, self.max_len))
+        # compare run k to main_db k
+        if super().lookup_param("k") != self.lookup_param("k"):
+            LOG.warning("Main database was created using a different k than this run database.")
+            
+        # compare run genomes to current genomes
+        if set(self.lookup_param("genomes")) != set(genomes):
+            LOG.warning("Genomes specified for this run are different than genomes specified for the previous run done in this database.")
+        
+        # compare run fuzzy to current fuzzy
 
-    conn.commit()
-    return conn
+        # compare run mismatches to main mismatches
 
-    def process(self):
+        # compare run stable_bp to main stable_bp
+
+    def process(self, genomes, fuzzy, amp_min_len, amp_max_len, amp_frac_genomes, force):
         """ Process the run recalculating as few steps as possible """
+
+        self._attach_run_db(force)
+
+        # set genomes = to all genomes in the database if none were specified
+        if genomes is None:
+            cursor = self.dbc.execute("SELECT name FROM Genomes")
+            genomes = []
+            for genome in cursor.fetchall():
+                genomes.append(genome[0])
+
+
+        # add the params to the database
+        self.add_params_to_database(fuzzy=fuzzy, amp_min_len=amp_min_len, amp_max_len=amp_max_len, amp_frac_genomes=amp_frac_genomes)
+
+        for genome in genomes:
+            self.add_params_to_database(genomes=genome)
+
+
 
         self.find_conserved_kmers()
         self.find_potential_amplicons()
@@ -1008,29 +1022,22 @@ class DatabaseRun(Database):
             2. fuzzy kmers that are logical duplicates (each perfectly matching kmer has something like 16 logical duplicates).
         """
         
-        # make a temporary table with only the genomes we want to include
-        # If genomes not specified, this table will be an exact clone of Genomes
-        #self.dbc.execute(""" DROP TABLE IF EXISTS SubGen """)
+        # make a table with only the genomes we want to include
         self.dbc.execute("""CREATE TABLE run_specific.SubGen (
                         id INTEGER PRIMARY KEY NOT NULL,
                         name STRING
                         );
                         """)
-        if genomes:
-            self.dbc.execute("""INSERT INTO SubGen (id, name)
-                            SELECT id, name FROM Genomes
-                            WHERE Genomes.id IN ({ph})
-                            """.format(ph=",".join(["?"]*len(genomes))), genomes)
-        else:
-            self.dbc.execute("""INSERT INTO SubGen (id, name)
-                            SELECT id, name FROM Genomes
-                            """)
+
+        # lookup the genomes to include from the params table
+        genomes = self.lookup_param("genomes")
+
+        self.dbc.execute("""INSERT INTO SubGen (id, name)
+                        SELECT id, name FROM Genomes
+                        WHERE Genomes.name IN ({placeholder})
+                        """.format(placeholder=",".join(["?"]*len(genomes))), genomes)
  
-        return
-
-        # Make a temporary table to hold the conserved Kmers
-        #self.dbc.execute("DROP TABLE IF EXISTS ConservedKmers")
-
+        # Make a table to hold the conserved Kmers
         self.dbc.execute("""
                 CREATE TABLE run_specific.ConservedKmers (
                 id INTEGER PRIMARY KEY NOT NULL,
@@ -1042,6 +1049,8 @@ class DatabaseRun(Database):
                 );
                 """)
 
+        # lookup the fuzzy value from the params table
+        fuzzy = self.lookup_param("fuzzy")
 
         if fuzzy:
             # select fuzzy kmers that are present in all genomes
@@ -1137,20 +1146,23 @@ class DatabaseRun(Database):
         TODO: Add k to length calculations to get actual length
         """
 
-        if min_genomes is None:
-            min_genomes = "(SELECT COUNT(*) FROM SubGen)"
-
-        if self.fuzzy:
+        # lookup fuzzy so we know which table to use
+        fuzzy = self.lookup_param("fuzzy")
+        if fuzzy:
             kmer_table = "FuzzyKmers"
         else:
             kmer_table = "Kmers"
 
         LOG.info("Making amplicons table...")
 
+
+        amp_min_len = self.lookup_param("amp_min_len")
+        amp_max_len = self.lookup_param("amp_max_len")
+
         # -- create temporary table 
         self.dbc.execute("""
                 -- make temporary table
-                CREATE TEMPORARY TABLE run_specific.temp_amplicons AS 
+                CREATE TEMPORARY TABLE temp_amplicons AS 
                 
                 -- populate it from this select
                 SELECT A.kmer AS kmer1, B.kmer AS kmer2, A.start as start1, B.start as start2, A.genome AS genome, A.contig AS contig, A.strand AS strand 
@@ -1166,21 +1178,24 @@ class DatabaseRun(Database):
                         
                         -- distance must be appropriate and consistent with strand
                         (
-                            (A.strand = '1' AND B.start - A.start BETWEEN {min_length} AND {max_length}) 
+                            (A.strand = '1' AND B.start - A.start BETWEEN {amp_min_len} AND {amp_max_len}) 
                         OR 
-                            (A.strand = '-1' AND A.start - B.start BETWEEN {min_length} AND {max_length})
+                            (A.strand = '-1' AND A.start - B.start BETWEEN {amp_min_len} AND {amp_max_len})
                         )
 
                         -- no self matches
                         AND A.kmer != B.kmer
                     )
-                """.format(self=self))
+                """.format(amp_min_len=amp_min_len, amp_max_len=amp_max_len))
 
         LOG.debug("temp_amplicons made... finishing table...")
 
 
-        # -- query temporary table
-        #self.dbc.execute("DROP TABLE IF EXISTS Amplicons")
+        # get the number of genomes that must be present in the amplicon
+        total_genomes = self.dbc.execute("SELECT COUNT(*) FROM run_specific.SubGen").fetchone()[0]
+        amp_frac_genomes = self.lookup_param("amp_frac_genomes")
+        min_num_genomes = math.ceil(total_genomes / amp_frac_genomes)
+
         # this statement appends columns for num_genomes and num_total
         self.dbc.execute("""
                 -- create a table
@@ -1201,7 +1216,7 @@ class DatabaseRun(Database):
                         GROUP BY temp_amplicons.kmer1, temp_amplicons.kmer2 
                         
                         -- require a minimum number of genomes
-                        HAVING num_genomes >= {min_genomes}) 
+                        HAVING num_genomes >= {min_num_genomes}) 
                     
                         -- merge counts with original table
                         ON tmp_amp.kmer1 = ta1 AND tmp_amp.kmer2 = ta2 
@@ -1213,13 +1228,13 @@ class DatabaseRun(Database):
                     -- join with specified kmer table to get kmer2 sequence
                     INNER JOIN {kmer_table} as K2 
                         ON tmp_amp.kmer2 = K2.id 
-                        """.format(kmer_table=kmer_table, min_genomes=self.min_genomes))
+                        """.format(kmer_table=kmer_table, min_num_genomes=min_num_genomes))
 
         # drop the temporary table
         self.dbc.execute("DROP TABLE temp_amplicons")
 
         # add an index to amplicons
-        self.dbc.execute("CREATE INDEX amplicon_indx on Amplicons (kmer1, kmer2)")
+        self.dbc.execute("CREATE INDEX run_specific.amplicon_indx on Amplicons (kmer1, kmer2)")
 
         self.dbc.commit()
 
@@ -1230,24 +1245,12 @@ class DatabaseRun(Database):
         genome_names = [str(itm[0]) for itm in cursor.fetchall()]
 
       
-        # set some stats for writing amplicons
-        self.amp_write_genomes = len(genome_names)
-        self.amp_write_unique = len(genome_names)
-        self.amp_write_duplicates = 0
-        self.amp_write_N = 99
-
-
-        # make amplicon directory if it doesn't exist
-        if not os.path.isdir(self.amplicon_dir):
-            os.mkdir(self.amplicon_dir)
-
-        ordered_matches = "SELECT Amplicons.kmer1, Amplicons.kmer2 FROM Amplicons GROUP BY Amplicons.kmer1, Amplicons.kmer2 ORDER BY num_genomes DESC, num_total ASC"
+        ordered_matches = "SELECT rowid, Amplicons.kmer1, Amplicons.kmer2 FROM Amplicons GROUP BY Amplicons.kmer1, Amplicons.kmer2 ORDER BY num_genomes DESC, num_total ASC"
 
         cursor = self.dbc.execute(ordered_matches)
 
         amplicon_stats = {}
         for result in lazy_imap(self.threads, self.check_amplicon, self.generate_amp_packages(cursor)):
-            print(result)
             amplicon_stats.update(result)
 
 
@@ -1255,12 +1258,26 @@ class DatabaseRun(Database):
         sorted_amplicons = sorted(amplicon_stats, key=lambda amp_id: (-1 * amplicon_stats[amp_id]["num_unique"], amplicon_stats[amp_id]["fwd_N"] + amplicon_stats[amp_id]["rev_N"], amplicon_stats[amp_id]["num_duplicates"]))
 
 
+        # make amplicon directory if it doesn't exist
+        if not os.path.isdir(self.amplicon_dir):
+            os.mkdir(self.amplicon_dir)
+
+
         with open(self.amplicon_stats_f, 'w') as STATS, open(self.amplicon_matr_f, 'w') as MATR:
             # write headers to both files
             STATS.write("\t".join(("amplicon", "num_genomes", "num_unique", "num_duplicates", "fwd_N", "rev_N")) + "\n")
             MATR.write("\t".join(["amplicon"] + list(genome_names)) + "\n")
 
-            for amp in sorted_amplicons:
+            for indx, amp in enumerate(sorted_amplicons):
+                
+                # write the top 100 amplicons as fastas
+                if indx < 100:
+                    # trim the amp name to just the amp_id
+                    amp_id = amp.split("_")[0][3:]
+
+                    self.write_amplicon_fasta(amp_id, amp + ".fasta", self.amplicon_dir)
+
+
                 # k for key not length of kmer
                 write_stats = [str(amp)] + [str(amplicon_stats[amp][k]) for k in ["num_genomes", "num_unique", "num_duplicates", "fwd_N", "rev_N"]]
                 write_matr = [str(amp)]
@@ -1272,41 +1289,31 @@ class DatabaseRun(Database):
 
                 STATS.write("\t".join(write_stats) + "\n")
                 MATR.write("\t".join(write_matr) + "\n")
+        
+        LOG.info("Successfully finished generating amplicon stats.") 
+        LOG.info("Wrote amplicon stats to...  {}".format(self.amplicon_stats_f))
+        LOG.info("Wrote amplicon uniqueness matrix to...  {}".format(self.amplicon_matr_f))
+        LOG.info("Wrote top amplicon FASTA files to...  {}".format(self.amplicon_dir))
 
     def generate_amp_packages(self, cursor):
         """ Generates so-called "amplicon packages" from a cursor that selects amplicons """
 
-        amp_id = 0
         for batch in self._iter_sql_results(cursor, 100):
             for amp in batch:
-                amp_id += 1
-                k1, k2 = amp
+                amp_id, k1, k2 = amp
+                seqs = self.get_amplicon_seqs(amp_id)
 
-                seqs = self.dbc.execute("""
-                        SELECT Genomes.name, Contigs.name, Amplicons.start1 as start, Amplicons.start2 + {k} as end, Amplicons.strand, SUBSTR(Sequences.seq, Amplicons.start1 + 1, Amplicons.start2 + {k} - Amplicons.start1) 
-                        
-                        FROM Amplicons 
-                        
-                        INNER JOIN Genomes 
-                            ON Amplicons.genome = Genomes.id 
-                        
-                        INNER JOIN Contigs 
-                            ON Amplicons.contig = Contigs.id 
-                        
-                        INNER JOIN Sequences 
-                            ON Amplicons.contig = Sequences.id WHERE Amplicons.kmer1 = '{k1}' 
-                            AND Amplicons.kmer2 = '{k2}'
-                        
-                        """.format(k=self.k, k1=k1, k2=k2)).fetchall()
                 yield (amp_id, k1, k2, seqs)
 
     def check_amplicon(self, amp_package):
         """ Checks amplicons and returns a dict of amplicon stats """
         
+        k = int(super().lookup_param("k"))
+
         # unpack the package
         amp_id, fwd_prim, rev_prim, db_sequences = amp_package
 
-        amplicon_name = "amp{amp_id}_{fwd_prim}-{rev_prim}.fasta".format(amp_id=amp_id, fwd_prim=fwd_prim, rev_prim=rev_prim)
+        amplicon_name = "amp{amp_id}_{fwd_prim}-{rev_prim}".format(amp_id=amp_id, fwd_prim=fwd_prim, rev_prim=rev_prim)
         # initialize the results dict
         amplicon_stats = {amplicon_name: {}}
 
@@ -1331,7 +1338,7 @@ class DatabaseRun(Database):
 
             # store one copy in full_seqs and one copy in inter_primer_only
             full_seqs.append(seq_obj)
-            inter_primer_only[(genome, header)] = str(seq_obj[self.k:-self.k].seq)
+            inter_primer_only[(genome, header)] = str(seq_obj[k:-k].seq)
  
         #
         ## Place each sequence into a cluster based on uniqueness
@@ -1385,18 +1392,58 @@ class DatabaseRun(Database):
         amplicon_stats[amplicon_name]["num_duplicates"] = duplicated_genomes
         amplicon_stats[amplicon_name]["genome_clusters"] = genome_clusters
 
-        # check some standards to determine if this amp should be written
-        if amplicon_stats[amplicon_name]["num_genomes"] >= self.amp_write_genomes and \
-                amplicon_stats[amplicon_name]["num_unique"] >= self.amp_write_unique and \
-                amplicon_stats[amplicon_name]["num_duplicates"] <= self.amp_write_duplicates and \
-                amplicon_stats[amplicon_name]["fwd_N"] + amplicon_stats[amplicon_name]["rev_N"] <= self.amp_write_N:
-
-            with open(self.amplicon_dir + "/" + amplicon_name, 'w') as OUT:
-                SeqIO.write(full_seqs, OUT, "fasta")
-
         return amplicon_stats
 
+    def write_amplicon_fasta(self, amplicon_id, file_name, output_dir):
+        """ Writes an amplicon fasta in the specified directory """
+        out_path = os.path.join(output_dir, file_name)
 
+        seqs = self.get_amplicon_seqs(amplicon_id)
+        seq_objs = []
+        for seq_data in seqs:
+
+            genome, contig, start, end, strand, seq = seq_data
+            header = "genome={genome};contig={contig};location=[{start}:{end}];strand={strand}".format(genome=genome, contig=contig, start=start, end=end, strand=strand)
+            seq_obj = SeqRecord(seq=Seq(seq), id=header, description="")
+
+            # reverse complement if necessary
+            if strand == "-1":
+                seq_obj = seq_obj.reverse_complement()
+
+            # add to the seq_objs list
+            seq_objs.append(seq_obj)
+
+        with open(out_path, 'w') as OUT:
+            SeqIO.write(seq_objs, OUT, "fasta")
+
+    def get_amplicon_seqs(self, amp_id):
+        """ Returns a list of sequences and sequence data from amplicon id 
+        
+        Remember amplicon id is just one amplicon that uses the primer set. We want to return all
+        amplicons that use the primer set of the given amplicon.
+        """
+
+        k = super().lookup_param("k")
+        seqs = self.dbc.execute("""
+                SELECT Genomes.name, Contigs.name, Amplicons.start1 as start, Amplicons.start2 + {k} as end, Amplicons.strand, SUBSTR(Sequences.seq, Amplicons.start1 + 1, Amplicons.start2 + {k} - Amplicons.start1) 
+                    
+                FROM Amplicons 
+                        
+                INNER JOIN Genomes 
+                    ON Amplicons.genome = Genomes.id 
+                
+                INNER JOIN Contigs 
+                    ON Amplicons.contig = Contigs.id 
+                    
+                INNER JOIN Sequences 
+                    ON Amplicons.contig = Sequences.id 
+                            
+                WHERE Amplicons.kmer1 = (SELECT kmer1 FROM Amplicons WHERE rowid = '{rowid}' LIMIT 1) AND
+                    Amplicons.kmer2 = (SELECT kmer2 FROM Amplicons WHERE rowid = '{rowid}' LIMIT 1)
+                        
+                """.format(k=k, rowid=amp_id)).fetchall()
+ 
+        return seqs
 
 
 class KCounter(multiprocessing.Process):
@@ -3359,16 +3406,17 @@ def subcommand_main(args):
     if args.fuzzy:
         main_db.generate_fuzzy_kmers(recalculate=args.force)
 
-def subcommand_run(args):
-    run_handler = DatabaseRun(args.db, args.output_dir, args.prefix, args.amp_min_len, args.amp_max_len, args.amp_frac_genomes) 
+    main_db.dbc.close()
 
-    counter.find_conserved_kmers(fuzzy=args.fuzzy)
-    counter.find_potential_amplicons()
-    counter.get_amplicon_stats()
+def subcommand_run(args):
+    run_handler = DatabaseRun(args.db, args.output_dir, args.prefix, args.threads) 
+
+    run_handler.process(args.genomes, args.fuzzy, args.amp_min_len, args.amp_max_len, args.amp_frac_genomes, args.force)
+
+    run_handler.dbc.close()
+
 
     
-
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -3378,7 +3426,6 @@ if __name__ == "__main__":
     parser.add_argument("-fuzzy", help="use fuzzy tables with a particular number of mismatches (default is to not use fuzzy kmers because this is much faster", action="store_true")
     parser.add_argument("-mismatches", help="number of mismatches to allow in fuzzy kmers [%(default)s]", default=1)
     parser.add_argument("-stable", help="number of bp at each end to not allow to be fuzzy [%(default)s]", default=2)
-    parser.add_argument("-skip_fuzzy", help="when this flag is set, skip calculation of the fuzzy kmer database (a long step)", action="store_true")
 
     subparsers = parser.add_subparsers()
 
@@ -3393,7 +3440,7 @@ if __name__ == "__main__":
     parser_run.add_argument("-output_dir", help="the directory in which to store the outputi [%(default)s]", default=os.getcwd())
     parser_run.add_argument("-prefix", help="a run specific prefix (this will be the base filename for all files [%(default)s]", default="run")
     parser_run.add_argument("-genomes", help="genome names from the main table to include in this run", nargs='+')
-    parser_run.add_argument("-amp_frac_genomes", help="minimum fraction of genomes required to be a good amplicon [default is present in all genomes]")
+    parser_run.add_argument("-amp_frac_genomes", help="minimum fraction of genomes required to be a good amplicon [%(default)s]", default=1)
     parser_run.add_argument("-amp_min_len", help="heuristic minimum amplicon length to narrow results [%(default)s]", default=100)
     parser_run.add_argument("-amp_max_len", help="maximum amplicon length [%(default)s]", default=400)
     args = parser.parse_args()
