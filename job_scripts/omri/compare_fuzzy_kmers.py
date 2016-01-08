@@ -35,6 +35,16 @@ I also suspect that this program may not be accounting for reverse complements.
 
 TODO: Print some final stats about amplicons (number unique, etc).
 
+TODO: Look into speeding up queries
+    
+    - index all the join on columns -- this should work fairly well
+
+    - reorder clauses to eliminate more potential results quicker
+
+TODO: To speed up building the main database, I could not build the kmer table until the end and then select distinct. Foreign keys are not enabled by default so it wouldn't matter. 
+
+TODO: To have one fewer join in all my tables, I could give genome directly to location. Then, I wouldn't have to join Contigs in each query. The price of this is redundant information.
+
 NOTE: Changing the sqlite3 row factory to sqlite3.Row messes up multiprocessing. If I need the Row class, I should make sure to set it back to the default None before moving on. 
 
 """
@@ -1011,9 +1021,9 @@ class DatabaseRun(Database):
 
 
         self.find_conserved_kmers()
-        self.find_potential_amplicons()
+        #self.find_potential_amplicons()
 
-        self.get_amplicon_stats()
+        #self.get_amplicon_stats()
 
     def find_conserved_kmers(self):
         """ Finds conserved kmers in all (default) or a specific set of genomes (specified by genomes argument) 
@@ -1056,10 +1066,22 @@ class DatabaseRun(Database):
             # select fuzzy kmers that are present in all genomes
             LOG.debug("Finding conserved fuzzy kmers...")
 
-            self.dbc.execute("""
+
+            # I think I could speed this up by starting with the limiting select and joining to locations
+            # Possibly I could store the limiting select as a view (it seems like temp tables are typically better)
+            """
+            In the plan, the locations table gets scanned twice, once for each select. Is it possible to group by kmer to count genomes and loop through locations in the same step?
+
+            There are also some instances of autoindexing. I've read that making the auto index and then using it may be slower than just scanning. 
+
+            This will probably be less of a problem once I make my indexes.
+
+            """
+
+            cursor = self.dbc.execute("""
                     -- Insert results into the temp table
                     INSERT INTO ConservedKmers (kmer, genome, contig, start, strand) 
-                    
+
                     -- Select from Location
                     SELECT cons_kmer, Contigs.genome, Locations.contig, Locations.start, Locations.strand 
                     FROM Locations 
@@ -1098,7 +1120,9 @@ class DatabaseRun(Database):
                         ON Locations.kmer = fkmer
 
                """)
-
+            for i in cursor.fetchall():
+                print(i)
+            sys.exit()
 
         else:
 
@@ -1159,6 +1183,9 @@ class DatabaseRun(Database):
         amp_min_len = self.lookup_param("amp_min_len")
         amp_max_len = self.lookup_param("amp_max_len")
 
+
+        # I might could speed this up by breaking up the OR into two separate inserts
+
         # -- create temporary table 
         self.dbc.execute("""
                 -- make temporary table
@@ -1173,8 +1200,12 @@ class DatabaseRun(Database):
                 INNER JOIN ConservedKmers B 
                     ON (
                         -- contig and strand must be the same
+                        -- contig first because it is more specific than strand
                         A.contig = B.contig AND 
                         A.strand = B.strand AND 
+
+                        -- no self matches
+                        A.kmer != B.kmer AND
                         
                         -- distance must be appropriate and consistent with strand
                         (
@@ -1183,9 +1214,7 @@ class DatabaseRun(Database):
                             (A.strand = '-1' AND A.start - B.start BETWEEN {amp_min_len} AND {amp_max_len})
                         )
 
-                        -- no self matches
-                        AND A.kmer != B.kmer
-                    )
+                   )
                 """.format(amp_min_len=amp_min_len, amp_max_len=amp_max_len))
 
         LOG.debug("temp_amplicons made... finishing table...")
