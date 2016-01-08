@@ -43,9 +43,11 @@ TODO: Look into speeding up queries
 
 TODO: To speed up building the main database, I could not build the kmer table until the end and then select distinct. Foreign keys are not enabled by default so it wouldn't matter. 
 
-TODO: To have one fewer join in all my tables, I could give genome directly to location. Then, I wouldn't have to join Contigs in each query. The price of this is redundant information.
-
 NOTE: Changing the sqlite3 row factory to sqlite3.Row messes up multiprocessing. If I need the Row class, I should make sure to set it back to the default None before moving on. 
+
+
+Performance Testing:
+    Adding genomes to locations may have resulted in a very small (or no) performance increase but the size added to the database is negligible so it is worth it for just simplifying queries
 
 """
 
@@ -221,10 +223,12 @@ class MainDatabase(Database):
         # create table to hold each location (could add a genome field to make lookups ever easier)
         self.dbc.execute("""CREATE TABLE Locations (
                         id INTEGER PRIMARY KEY NOT NULL,
+                        genome INTEGER NOT NULL,
                         contig INTEGER NOT NULL,
                         start INTEGER,
                         strand INTEGER,
                         kmer INTEGER NOT NULL,
+                        FOREIGN KEY (genome) REFERENCES Genomes(id)
                         FOREIGN KEY(contig) REFERENCES Contigs(id)
                         FOREIGN KEY(kmer) REFERENCES Kmers(id)
                         );
@@ -489,7 +493,7 @@ class MainDatabase(Database):
 
     def _add_locations(self, locations):
         """ Insert new locations from a list of location tuples """
-        self.dbc.executemany('INSERT INTO Locations (contig, start, strand, kmer) VALUES (?, ?, ?, ?)', locations)
+        self.dbc.executemany('INSERT INTO Locations (genome, contig, start, strand, kmer) VALUES (?, ?, ?, ?, ?)', locations)
 
 
     #
@@ -1083,16 +1087,12 @@ class DatabaseRun(Database):
                     INSERT INTO ConservedKmers (kmer, genome, contig, start, strand) 
 
                     -- Select from Location
-                    SELECT cons_kmer, Contigs.genome, Locations.contig, Locations.start, Locations.strand 
+                    SELECT cons_kmer, Locations.genome, Locations.contig, Locations.start, Locations.strand 
                     FROM Locations 
 
-                    -- join Contigs to be able to join SubGen
-                    INNER JOIN Contigs 
-                        ON Contigs.id = Locations.contig 
-                    
                     -- join SubGen to check genome number
                     INNER JOIN SubGen
-                        ON Contigs.genome = SubGen.id
+                        ON Locations.genome = SubGen.id
 
 
                     -- join with a select that checks  all genomes represented
@@ -1108,15 +1108,11 @@ class DatabaseRun(Database):
                             INNER JOIN Locations
                                 ON KmerToFuzzy.kmer = Locations.kmer
 
-                            -- join contigs to get genomes
-                            INNER JOIN Contigs 
-                                ON Locations.contig = Contigs.id 
-
                             -- group by fuzzy kmer
                             GROUP BY FuzzyKmers.id
 
                             -- contrain to all genomes represented
-                            HAVING COUNT(DISTINCT Contigs.genome) = (SELECT COUNT(*) FROM SubGen)) 
+                            HAVING COUNT(DISTINCT Locations.genome) = (SELECT COUNT(*) FROM SubGen)) 
                         ON Locations.kmer = fkmer
 
                """)
@@ -1519,8 +1515,6 @@ class KCounter(multiprocessing.Process):
             else:
                 print("Not tuple!")
 
-
-
     def count_kmers(self, genome, contig, start, seq):
         for indx in range(len(seq)+1 - self.k):
             #kmers_counted += 1
@@ -1541,7 +1535,7 @@ class KCounter(multiprocessing.Process):
 
             kmer_id = self._kmer_to_id(kmer)
             # add the location and the kmer 
-            self.locations.append((contig, start+indx, strand, kmer_id))
+            self.locations.append((genome, contig, start+indx, strand, kmer_id))
             self.kmers[kmer_id] = kmer
         return
 
