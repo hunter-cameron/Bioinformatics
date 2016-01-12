@@ -225,7 +225,7 @@ class MetadataParser(HTMLParser):
         #        "IMG Release": "",
         #        "Comment": "",
         #        "Release Date": "",
-        #        "Add Date": "",
+                 "Add Date": "add_date",
         #        "Modified Date": "",
         #        "Distance Matrix Calc. Date": "",
                 "High Quality": "high_quality",
@@ -264,7 +264,7 @@ class MetadataParser(HTMLParser):
         #        "IMG Release",
         #        "Comment",
         #        "Release Date",
-        #        "Add Date",
+                "Add Date",
         #        "Modified Date",
         #        "Distance Matrix Calc. Date",
                 "High Quality",
@@ -435,8 +435,7 @@ class JGIOrganism(object):
                 prefix = self.taxon_oid
 
             
-            # check if we are going to be able to downloadload this
-        
+            # check if we are going to be able to download this
             if not self.interface.check_IMG_download(prefix, datatype):
                 self.download_reports[datatype] = "skipped"
                 return
@@ -462,7 +461,7 @@ class JGIOrganism(object):
                 files = self._get_jgi_files(datatype)
             except (AttributeLookupError, PortalError) as e:
                 self.download_reports["|".join(datatype)] = "failed"
-                return
+                raise 
 
 
             try:

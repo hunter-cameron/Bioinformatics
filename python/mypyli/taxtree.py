@@ -186,8 +186,7 @@ class TaxTree(object):
             tax_dict = self._taxstring2dict(taxstring)
         except:
             raise 
-        print("here")
-    
+
         # lookup the root node
         node = self.lookup_taxid("131567") 
 
@@ -210,6 +209,7 @@ class TaxTree(object):
 
             print(("Looking for", rank, taxname))
             for child in node.children:
+                print((child.name, child.rank))
                 if child.name == taxname and child.rank == rank:
                     if len(taxonomy) == 1:
                         return child
