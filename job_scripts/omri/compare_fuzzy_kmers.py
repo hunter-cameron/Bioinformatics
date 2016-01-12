@@ -1023,11 +1023,13 @@ class DatabaseRun(Database):
             self.add_params_to_database(genomes=genome)
 
 
+        # analyze the table to help create the best plan
+        #self.dbc.execute("ANALYZE")
 
         self.find_conserved_kmers()
-        #self.find_potential_amplicons()
+        self.find_potential_amplicons()
 
-        #self.get_amplicon_stats()
+        self.get_amplicon_stats()
 
     def find_conserved_kmers(self):
         """ Finds conserved kmers in all (default) or a specific set of genomes (specified by genomes argument) 
@@ -1066,21 +1068,10 @@ class DatabaseRun(Database):
         # lookup the fuzzy value from the params table
         fuzzy = self.lookup_param("fuzzy")
 
+
         if fuzzy:
             # select fuzzy kmers that are present in all genomes
             LOG.debug("Finding conserved fuzzy kmers...")
-
-
-            # I think I could speed this up by starting with the limiting select and joining to locations
-            # Possibly I could store the limiting select as a view (it seems like temp tables are typically better)
-            """
-            In the plan, the locations table gets scanned twice, once for each select. Is it possible to group by kmer to count genomes and loop through locations in the same step?
-
-            There are also some instances of autoindexing. I've read that making the auto index and then using it may be slower than just scanning. 
-
-            This will probably be less of a problem once I make my indexes.
-
-            """
 
             cursor = self.dbc.execute("""
                     -- Insert results into the temp table
@@ -1116,10 +1107,6 @@ class DatabaseRun(Database):
                         ON Locations.kmer = fkmer
 
                """)
-            for i in cursor.fetchall():
-                print(i)
-            sys.exit()
-
         else:
 
             # select kmers that are present in all genomes
