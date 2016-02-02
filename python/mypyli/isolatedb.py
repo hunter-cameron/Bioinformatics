@@ -3,7 +3,7 @@ from __future__ import print_function
 import pandas
 
 # MAGIC
-ISOLATE_DB = '/nas02/home/h/j/hjcamero/scripts/python/mypyli/isolate_db'
+ISOLATE_DB = '/proj/dangl_lab/data/genomes/new_isolates/isolate_db'
 
 
 
@@ -21,6 +21,7 @@ def read_database(db_f):
                 database[indx].append(value)
 
     return database
+
 
 database = read_database(ISOLATE_DB)
 

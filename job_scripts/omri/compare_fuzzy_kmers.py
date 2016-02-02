@@ -1006,7 +1006,8 @@ class DatabaseRun(Database):
     def process(self, genomes, fuzzy, amp_min_len, amp_max_len, amp_frac_genomes, force):
         """ Process the run recalculating as few steps as possible """
 
-        self._attach_run_db(force)
+        #self._attach_run_db(force)
+        self.dbc.execute("ATTACH '{}' as run_specific".format(self.run_database_f))
 
         # set genomes = to all genomes in the database if none were specified
         if genomes is None:
@@ -1026,7 +1027,7 @@ class DatabaseRun(Database):
         # analyze the table to help create the best plan
         #self.dbc.execute("ANALYZE")
 
-        self.find_conserved_kmers()
+        #self.find_conserved_kmers()
         self.find_potential_amplicons()
 
         self.get_amplicon_stats()
@@ -1047,8 +1048,19 @@ class DatabaseRun(Database):
 
         # lookup the genomes to include from the params table
         genomes = self.lookup_param("genomes")
+        # convert to a list if not already a list
+        if type(genomes) != list:
+            genomes = [genomes]
 
-        self.dbc.execute("""INSERT INTO SubGen (id, name)
+        command = """
+                        INSERT INTO SubGen (id, name)
+                        SELECT id, name FROM Genomes
+                        WHERE Genomes.name IN ('{placeholder}')
+                        """.format(placeholder="', '".join([genome for genome in genomes]))
+ 
+
+        cursor = self.dbc.execute("""
+                        INSERT INTO SubGen (id, name)
                         SELECT id, name FROM Genomes
                         WHERE Genomes.name IN ({placeholder})
                         """.format(placeholder=",".join(["?"]*len(genomes))), genomes)
@@ -1172,7 +1184,7 @@ class DatabaseRun(Database):
         # -- create temporary table 
         self.dbc.execute("""
                 -- make temporary table
-                CREATE TEMPORARY TABLE temp_amplicons AS 
+                CREATE TABLE run_specific.temp_amplicons AS 
                 
                 -- populate it from this select
                 SELECT A.kmer AS kmer1, B.kmer AS kmer2, A.start as start1, B.start as start2, A.genome AS genome, A.contig AS contig, A.strand AS strand 
@@ -1243,7 +1255,7 @@ class DatabaseRun(Database):
                         """.format(kmer_table=kmer_table, min_num_genomes=min_num_genomes))
 
         # drop the temporary table
-        self.dbc.execute("DROP TABLE temp_amplicons")
+        #self.dbc.execute("DROP TABLE temp_amplicons")
 
         # add an index to amplicons
         self.dbc.execute("CREATE INDEX run_specific.amplicon_indx on Amplicons (kmer1, kmer2)")

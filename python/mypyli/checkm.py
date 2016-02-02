@@ -21,6 +21,7 @@ def legacy_parse(checkm_fh):
         yield CheckmRecord(name=entry, params=all_dict[entry])
 
 def write_table(records, out="checkm_table.tsv"):
+    """ This mostly shouldn't be used. CheckM offers an option that does this """
     with open(out, 'w') as OUT:
         OUT.write("\t".join(["name", "genome_size", "N50", "num_contigs", "longest_contig", "marker_lineage", "num_markers", "completeness", "contamination"]) + "\n")
         for record in records:
@@ -56,7 +57,7 @@ def write_record_classifications(records, out="checkm_record_classifications.txt
             OUT.write("\n")
 
 class CheckmRecord(object):
-    """ Class to parse a Checkm Output file """
+    """ Class to parse a Checkm Output file. Used when classifying CheckM bins """
 
     GOOD_COMP = 80
     MIN_COMP = 40
@@ -129,7 +130,67 @@ class CheckmRecord(object):
 
         elif self.completeness < min_comp:
             return "junk"
+
+
+class CheckmBin(object):
+    """ Class to represent a bin from CheckM """
+
+    def __init__(self, name):
+        self.name = name
+    
+        self.completeness = None
+        self.contamination = None
+
+        self.contigs = []
+
+    @staticmethod
+    def parse_checkm_data(checkm_f):
+        """ Parses CheckM's json files, yields tuples of bin_name, params """
+        with open(checkm_f, 'r') as IN:
+            for line in IN:
+                bin_name, param_json = line[:-1].split("\t")
+
+                params = json.loads(param_json.replace("'", '"'))
+
+                yield bin_name, params
+
+    @classmethod
+    def from_marker_gene_stats(cls, marker_gene_stats_f):
+        """ Yields CheckM bin objects for all the bins in a marker_gene_stats file """
+
+        for bin_name, params in cls.parse_checkm_data(marker_gene_stats_f):
+            checkm_bin = CheckmBin(bin_name)
             
+            # go through the dict of contigs
+            for contig, contig_data in params.items():
+                checkm_contig = CheckmContig(contig)
+
+                for key, value in contig_data.items():
+                    pass
+
+class CheckmContig(object):
+    """ Represents a contig that is part of a CheckmBin """
+
+    def __init__(self, name):
+        self.name = name
+
+        self.length = None
+
+        self.markers = []
+
+
+class CheckmMarker(object):
+    """ Represents a marker and, optionally, its location """
+
+    def __init__(self, name):
+        self.name = name
+
+        self.location = None
+
+
+
+
+
 
 
 if __name__ == "__main__":

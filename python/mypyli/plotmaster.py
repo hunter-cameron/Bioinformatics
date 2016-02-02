@@ -5,6 +5,33 @@ import matplotlib.pyplot as plt
 from matplotlib import rcParams
 rcParams.update({'figure.autolayout': True})
 
+
+def scatter_plot(df):
+    # get a range to use as the x values (will later be replaced with names) 
+    xvals = range(len(df.index))
+
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    
+    # set up for color cycling
+    # I don't actually know what this does
+    # taken from http://stackoverflow.com/questions/16006572/plotting-different-colors-in-matplotlib
+    cmap = plt.get_cmap('gnuplot')
+    colors = [cmap(i) for i in np.linspace(0, 1, len(df.columns))]
+
+    for color, col in zip(colors, df.columns):
+
+        ax.scatter(x=xvals, y=df[col], c=color, label=col)
+
+        ax.set_xticks(xvals)
+        ax.set_xticklabels(df.index, fontsize="x-small", rotation="vertical", ha="center")
+
+        ax.set_xlim(-1, xvals[-1]+1)
+
+    ax.legend(loc='best')
+    return ax
+
+
 def histogram(data, bins):
     """ 
     Returns a matplotlib ax object or a histogram, specializes in 
