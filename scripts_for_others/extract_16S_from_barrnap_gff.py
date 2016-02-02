@@ -1,0 +1,1 @@
+../python/extract_16S_from_barrnap_gff.py

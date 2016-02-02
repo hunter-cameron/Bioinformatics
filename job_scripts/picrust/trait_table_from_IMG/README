@@ -1,0 +1,1 @@
+The scripts in this directory are those that are required to take an annotation file from JGI (KOs) and convert it into a trait table suitable to use for comparing to a PICRUSt predicted metagenome.
