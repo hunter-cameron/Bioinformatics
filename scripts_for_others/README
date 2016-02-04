@@ -9,6 +9,17 @@ attention.
 
 Current Scripts in this Directory:
 
+calculate_ANI_and_AF.py     Calculates whole genome pairwise similarity between a 
+                            group of genomes. Optionally parallelizes across an 
+                            LSF based cluster. Requires bbmap.sh to be on the 
+                            system path.
+
+compare_reassemblies.py     Compares a set of assemblies using two methods to see
+                            if the new method is superior to the original. Uses
+                            the output from QUAST and optionally, counts of genes,
+                            and CheckM. Outputs a single graph with the fold change
+                            of various parameters between the new and orig assemblies.
+
 compare_two_lists.py        Simple utility to compare the content of two lists.
                             Reports items that on both lists and unique to
                             either list.
@@ -18,20 +29,25 @@ extract_16S_from_barrnap_gff.py
                             Extracts 16S sequences from a barrnap-created
                             *.gff file.
 
+isolate_download_manager.py
+                             
+                            The ideal entry point to the jgi_interface.py script
+                            for those looking to download and store data about a
+                            pannel of genomes from JGI. This program interactively
+                            downloads data and makes a database of associated
+                            metadata for a list of taxon_oids. Also has experimental
+                            ability to check for new isolates in existing projects of
+                            interest. 
+
 jgi_interface.py            Script to log in and download files from the JGI
                             or IMG websites. For documentation, run using the
                             '-h' option.
 
 mypyli                      MY PYthon LIbrary. Custom library of python
                             modules that can be imported into your scripts.
-                            These are all experimental but I have found the
-                            most useful to be taxtree.py which does operations
-                            with taxonomy strings (k_Bacteria; p_...) including
-                            looking them up from taxonomy ids, trimming them,
-                            and performing simple "is-a-member-of" functions.
-                            Within taxtree.py, converting taxids to taxonomy
-                            strings is fairly well tested (though not error
-                            proof) but other functions aren't as well tested.
+                            These are all experimental and still in 
+                            development but some of the other scripts in this 
+                            directory rely on them.
 
 prune_phylo_tree.py         Script to prune a phylogenetic tree based on a list
                             of node names or a regular expression. Also supports

@@ -30,7 +30,7 @@ import traceback
 # TODO With JGI's initiative to make portals for all IMG data, there are some weird naming conventions for things that were sequenced at other locations so do not have a JGI portal. So best I can tell, such projects do not have a project name but the download link (with a different format) gives the organism lookup name directly.
         # Right now, this isn't a big enough problem to address but, if it becomes bigger, something will need to be done.
 
-# TODO After IMG update, metagenome projects have different params than non-metagenome projects on IMG
+# TODO After IMG update, metagenome projects have different params than non-metagenome projects on IMG. This will cause downloading IMG data (ko, cog, etc..) to give a file with just blank headers. If you need to download data from a metagenome project, you must go to JGIOrganism._img_data_request() and uncomment the two lines discussed there. When done, these lines must be commented out again to get non-metagenome projects. This isn't ideal but I don't have enough time to change it.
 
 LOG = logging.getLogger(__name__)
 
@@ -46,11 +46,9 @@ LOGIN = 'https://signon.jgi.doe.gov/signon/create'
 XML = 'http://genome.jgi.doe.gov/ext-api/downloads/get-directory?organism='     # complete with organism name
 DATA = 'http://genome.jgi.doe.gov/'     # complete with path to file from the organism XML
 LOOKUP = 'http://genome.jgi.doe.gov/lookup?'
-#IMG_LOOKUP = 'https://img.jgi.doe.gov/cgi-bin/w/main.cgi?'
 
 # This is the url for IMG-ER which might be what I should use because it is the more complete resource according to some folks at JGI.
 IMG_LOOKUP = 'https://img.jgi.doe.gov/cgi-bin/mer/main.cgi'
-#IMG_LOOKUP = 'https://img.jgi.doe.gov/cgi-bin/er/main.cgi'
 IMG_DATA = 'https://img.jgi.doe.gov/cgi-bin/mer/xml.cgi'
 
 
@@ -429,9 +427,9 @@ class JGIOrganism(object):
 
             
             # set the prefix
-            try:
+            if self.prefix:
                 prefix = self.prefix
-            except:
+            else:
                 prefix = self.taxon_oid
 
             

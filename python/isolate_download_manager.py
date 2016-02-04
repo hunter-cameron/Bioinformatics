@@ -773,6 +773,7 @@ def write_database(df, filename):
 
         
 class UserInterface(object):
+    """ Class for a user interface to this program. This is kept for educational purposes only. The method for using this script now is to run it in Ipython. """
     
     STATES = {  "main": 
                     [ 
@@ -950,9 +951,9 @@ def get_ids_from_file(ids_f):
     return ids
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="Provides an interactive interface for managing/downloading a JGI/IMG based database. The ideal way to use this is by invoking this script using ipython.")
     parser.add_argument("-db", "-database", help="a database mapping Taxon id to types of data on file. will be created if blank", default="")
-    parser.add_argument("-dir", "-base_dir", help="the base directory isolates directory", default=os.getcwd());
+    parser.add_argument("-dir", "-base_dir", help="the base isolates directory", default=os.getcwd());
     parser.add_argument("-mkdir", help="make data directories if they don't exist", action="store_true")
     parser.add_argument("-ids", help="list of ids (or a file with a list) to check, this is optional if there is an established database", nargs="*")
     args = parser.parse_args()
@@ -1066,6 +1067,7 @@ Other notable variables:
     metadata_to_database -> dict mapping metadata keys (on IMG organism summary) to field names
     database_to_database -> dict mapping fields in a previous database to field names in this db
     field_order -> list that contains the order of all the fields from the 3 dicts above
+    projects -> set of the current projects known to include relevant isolates
 
 You might want to:
 

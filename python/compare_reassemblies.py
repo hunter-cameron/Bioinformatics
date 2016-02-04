@@ -162,7 +162,7 @@ def add_checkm_to_df(df, checkm_f):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Compares pairs of genomes on fields like N50, Genome length, longest contig, number of genes, etc.  Genomes will be paired by looking at the names in the quast file. It is expected to find a pair of entries with the same basename, one with '.orig' and one with '.new'. The plot is a fold-change plot where anything > 0 means the new assembly is better than the orig. (For fields like # contigs where fewer is better, the fold change is inversed to keep everything above the line meaning the new asm is better.)")
+    parser = argparse.ArgumentParser(description="Compares pairs of genomes on fields like N50, Genome length, longest contig, number of genes, etc.  Genomes will be paired by looking at the names in the quast file. It is expected to find a pair of entries with the same basename, one with '.orig.fasta' and one with '.new.fasta'. The plot is a fold-change plot where anything > 0 means the new assembly is better than the orig. (For fields like # contigs where fewer is better, the fold change is inversed to keep everything above the line meaning the new asm is better.)")
     parser.add_argument("-quast", help="transposed (genomes as rows) quast results file that includes all genomes", required=True)
     parser.add_argument("-genes", help=".faa files (one per assembly) with annotated genes", nargs="+")
     parser.add_argument("-checkm", help="checkm tab delimited file")
