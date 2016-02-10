@@ -462,9 +462,9 @@ class JGIOrganism(object):
                 raise 
 
 
-            try:
+            if self.prefix:
                 prefix = self.prefix
-            except:
+            else:
                 prefix = self.proj_id
 
 

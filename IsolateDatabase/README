@@ -1,0 +1,5 @@
+
+This is a directory of some simple scripts used to interact with the isolate database that is being currently developed. 
+
+
+I know already that the run_query.py script needs to be updated with some sort of parameter substition model to enable users to run queries with where clauses that have a list of params (SELECT * FROM DanglView WHERE freezer IN my_list_of_favorite_isolates)

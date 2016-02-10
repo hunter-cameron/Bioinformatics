@@ -1,0 +1,1 @@
+../python/checkm_select_bins.py

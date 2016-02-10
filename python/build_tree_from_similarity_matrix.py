@@ -88,7 +88,7 @@ def parse_input_matrix(input_f):
 
         return nested_dict
 
-def create_names_dict(names):
+def create_names_dict(rename, names):
     """ 
     Function that changes names. 
     
@@ -96,17 +96,19 @@ def create_names_dict(names):
 
     This function can be edited by the user.
     """
+    names_dict = {}
+    with open(rename, 'r') as IN:
+        for line in IN:
+            old_name, new_name = line.rstrip().split("\t")
+            names_dict[old_name] = new_name
 
-    from mypyli import isolatedb
-    freezer_ids = isolatedb.convert_values(names, conv_from='taxon_oid', conv_to='freezer_id')
+    for name in names:
+        try:
+            names_dict[name]
+        except KeyError:
+            names_dict[name] = name
 
-    org_names = isolatedb.convert_values(names, conv_from='taxon_oid', conv_to='organism_name')
-
-    name_dict = {}
-    for name, freezer_id, org_name in zip(names, freezer_ids, org_names):
-        name_dict[name] = freezer_id + "_" + org_name
-
-    return name_dict
+    return names_dict
 
 
 
@@ -116,7 +118,7 @@ if __name__ == "__main__":
     parser.add_argument("-alg", help="the tree building algorithm", choices=['nj', 'upgma'], default="nj")
     parser.add_argument("-out", help="the output file name for the tree", default="tree.tre")
     parser.add_argument("-format", help="the format to write the tree in", choices=["newick"], default="newick")
-    parser.add_argument("-rename", help="flag to set if name should be changed using the create_names_dict() function", action="store_true")
+    parser.add_argument("-rename", help="file that has old_name<tab>new_name to rename a set of the nodes")
     args = parser.parse_args()
 
 
@@ -124,7 +126,7 @@ if __name__ == "__main__":
 
     if args.rename:
         names = list(nested_dict.keys())
-        names_dict = create_names_dict(names)
+        names_dict = create_names_dict(args.rename, names)
     else:
         names_dict = None
 

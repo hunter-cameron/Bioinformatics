@@ -35,7 +35,11 @@ class TreeEditor(object):
         """ Use biopython to read in a tree """
 
         # comments are confidence allows all digit node names to parse correctly
-        self.tree = Phylo.read(tree_f, format, comments_are_confidence=True)
+        # I think this is only needed for Newick
+        if format == "newick":
+            self.tree = Phylo.read(tree_f, format, comments_are_confidence=True)
+        else:
+            self.tree = Phylo.read(tree_f, format)
         
     def write_tree(self, format, path=None):
         """ Use biopython to write the tree """
@@ -151,16 +155,21 @@ def main(args):
     te.edit(nodes, args.regex, args.remove)
 
     # write the tree
-    te.write_tree(format=args.format, path=args.out)
+    if args.out_format:
+        format = args.out_format
+    else:
+        format = args.format
+    te.write_tree(format=format, path=args.out)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=description, formatter_class=argparse.RawTextHelpFormatter)
-    parser.add_argument("-tree", help="the tree from storage/tree/concatenated.tre", required=True)
+    parser.add_argument("-tree", help="the tree", required=True)
     parser.add_argument("-format", help="the format of the tree", choices=["newick", "nexus", "phyloxml"], required=True)
     parser.add_argument("-nodes", help="a list of nodes to keep, optional new names in the second column")
     parser.add_argument("-regex", help="a regular expression to match node names from the beginning")
     parser.add_argument("-remove", help="flag to indicate you want to remove the nodes in nodes/regex", action="store_true")
     parser.add_argument("-out", help="the path for the pruned tree")
+    parser.add_argument("-out_format", help="the output format if it is different from the input", choices=["newick", "nexus", "phyloxml"])
 
     parser.add_argument("-list", help="writes all external node names to stdout; overwrites other options", action="store_true")
 

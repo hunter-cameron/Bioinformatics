@@ -576,10 +576,10 @@ def uniqueness_histogram(msa_files):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="This script is meant to be used to find potential amplicons from a set of MSA files based on shannon entropy and a uniqueness value fround from a distance matrix that can be used to tell the group of aligned sequences apart but will amplify in them all.")
     parser.add_argument("-msa", help="multiple sequence alignment file", nargs="+")
-    parser.add_argument("-amp_len", help="the maximum length of the amplicon", type=int)
-    parser.add_argument("-ambig", help="maximum number of ambiguous bases to allow in primers", type=int, default=0)
-    parser.add_argument("-min_primer", help="the minimum primer length (>= 10)", type=int, default=20)
-    #parser.add_argument("-max_primer", help="the maximum primer length (<= 40)", type=int, default=25)
+    parser.add_argument("-amp_len", help="the maximum length of the amplicon", type=int, required=True)
+    parser.add_argument("-ambig", help="maximum number of ambiguous bases to allow in primers [%(default)s]", type=int, default=0)
+    parser.add_argument("-min_primer", help="the minimum primer length (>= 10) [%(default)s]", type=int, default=20)
+    #parser.add_argument("-max_primer", help="the maximum primer length (<= 40) [%(default)s]", type=int, default=25)
     parser.add_argument("-subset", help="filter MSA to only include these genome names as listed in the GenBank file")
 
     args = parser.parse_args()

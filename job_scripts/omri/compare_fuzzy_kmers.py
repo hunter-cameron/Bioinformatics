@@ -33,6 +33,9 @@ LOG.setLevel("DEBUG")
 
 I also suspect that this program may not be accounting for reverse complements.
 
+THIS PROGRAM DOES NOT CURRENTLY WORK!!!!
+
+
 TODO: Print some final stats about amplicons (number unique, etc).
 
 TODO: Look into speeding up queries

@@ -341,7 +341,7 @@ def main(args):
             AF.write("\t".join(af_arr) + "\n")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Calculates ANI (average nucleotide identity) and AF (alignment fraction) between two genomes. This is done by breaking up each query genome into pieces and mapping those pieces back to the other genome in the pair. AF is the length of the fraction of pieces that map back. ANI is the average identity of the length that maps back. This script outputs two matrices where each cell is either ANI or AF. Optionally splits up the mapping across multiple nodes of an LSF cluster.")
+    parser = argparse.ArgumentParser(description="Calculates ANI (average nucleotide identity) and AF (alignment fraction) between two genomes. This is done by breaking up each query genome into pieces and mapping those pieces back to the other genome in the pair. AF is the length of the fraction of pieces that map back. ANI is the average identity of the length that maps back. This script outputs two matrices where each cell is either ANI or AF. Optionally splits up the mapping across multiple nodes of an LSF cluster. This method is based on the paper 'Microbial species delineation using whole genome sequences' by Varghese et al http://nar.oxfordjournals.org/content/early/2015/07/06/nar.gkv657.full") 
 
     parser.add_argument("-i", help="bunch of fasta files to all-by-all compare", nargs="+", required=True)
     parser.add_argument("-ref", help="bunch of fasta files to use as the reference group (if you don't want all-by-all)", nargs="+")
