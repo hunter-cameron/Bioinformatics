@@ -455,19 +455,23 @@ class IsolateManager(object):
         self.jgi_interface = None
 
         # check for default path and read that db if present, otherwise, prepare to write new one
-        if self.database_path:
-            self.read_database()
-        elif os.path.isfile(base_dir + "/" + database_path):
-            self.database_path = base_dir + "/" + database_path
+        if not self.database_path:
+            self.database_path = base_dir + "/" + self.DEFAULT_DATABASE
+
+        if os.path.isfile(self.database_path):
             self.read_database()
         else:
-            self.database_path = base_dir + "/" + self.DEFAULT_DATABASE
-            if os.path.isfile(self.database_path):
-                self.read_database()
+            self.create_database()
 
+
+ 
     #######################
     ## Isolate based methods
     #
+    
+    def create_database(self):
+        """ Sets up interface to use a new database """
+        LOG.info("Creating new database '{}'".format(self.database_path))
 
     def read_database(self, taxon_oid_field="taxon_oid"):
         """ Reads a database into Isolate Objects """
