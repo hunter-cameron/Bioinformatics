@@ -463,13 +463,22 @@ class IsolateManager(object):
         else:
             self.create_database()
 
+        if mkdir:
+            # make the base dir
+            if not os.path.isdir(base_dir):
+                os.mkdir(base_dir)
+
+            for data_dir in self.DATA_DIRS:
+                full_path = base_dir + "/" + data_dir
+                if not os.path.isdir(full_path):
+                    os.mkdir(full_path)
 
  
     #######################
     ## Isolate based methods
     #
     
-    def create_database(self):
+    def create_database(self, mkdir=False):
         """ Sets up interface to use a new database """
         LOG.info("Creating new database '{}'".format(self.database_path))
 
