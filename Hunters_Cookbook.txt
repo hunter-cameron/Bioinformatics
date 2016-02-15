@@ -1,0 +1,464 @@
+This is a cookbook that serves as inspiration for using the scripts in this directory to do neat things. 
+
+All the workflows documented herein are in some form the intellectual property of Hunter Cameron.
+They are free to be used or modified in any way. I would appreciate being credited if these workflows play a significant role in your project. 
+
+As a note, if the recipe is about one of my programs, this cookbook is completely SUPPLEMENTAL to the help messages generated from within the program. In general, I try to document use cases here and features in the program help.
+
+###########################
+# Fork--------------Spoon #
+#                         # 
+# \|/  Bon appetit!  ( )  #
+#  |   Bon appetit!   |   #
+#                         #
+# Fork--------------Spoon #
+###########################
+
+
+TABLE OF CONTENTS
+=================
+
+DOWNLOADING DATA FROM JGI/IMG
+	Recipe1: Downloading a file from JGI
+	Recipe2: Downloading IMG Data
+	Recipe3: Downloading JGI Data
+
+CHECKM GENOME EVALUATION
+	Recipe1: Running CheckM
+	Recipe2: Making plots
+	Recipe3: Making a tree
+
+GENOME COMPARISON AND SIMILARITY
+	Recipe1: Calculating AF and ANI for a bunch of fastas
+	Recipe2: Making a tree from the alignment fraction matrix
+
+PICRUST AND PLANT ASSOCIATED DATABASE
+	Recipe1: Running PICRUSt -- predict traits, then predict metagenome
+	Recipe2: Updating the Plant Associated Database/Making a custom database
+	Recipe3: Collapsing KOs by category
+
+FINDING CONSERVED PRIMERS (MOSTLY JUST FOR OMRI)
+
+METAGENOMIC BINNING
+
+MYPYLI MODULES OF INTEREST
+	Recipe1: parallelizer
+	Recipe2: taxtree
+	Recipe3: isolatedb
+	Recipe4: samparser
+
+
+
+
+DOWNLOADING DATA FROM JGI/IMG
+=============================
+
+The primary entry point for downloading data from IMG is the jgi_interface.py script.
+Run the script with the -h option for a more thorough explanation of all the options.
+
+It requires python 3 to run. 
+
+NOTE: Don't bother submitting these jobs to LSF. The most of the compute nodes DO NOT have internet access so you will get weird errors if you do. They aren't intrusive to the other users when ran from the login node.
+
+
+
+Recipe1: Downloading a file from JGI
+
+This recipe is to be used to download a file by path from JGI. This is primarily to be used when a more automated download recipe has failed. Paths will have to be found by browsing the site manually. 
+
+	python jgi_interface.py -l ~/my_login_info -d 'http://genome.jgi.doe.gov/IMG_2556921003/download/download_bundle.tar.gz'
+
+\|/
+ |
+
+Recipe2: Downloading IMG Data
+
+There is a distinction to be made between IMG and JGI data. IMG data includes: GenBank and KO, COG, Pfam ...and so on... annotations. This data is stored on the IMG website. JGI data will be discussed later.
+
+** To access IMG data, a taxon_oid is required. You may supply this program with a project_id (from JGI) and an attempt will be made to look up the taxon_oid but it is not always successful (JGI changes the format of this stuff when it does updates so formats are not always consistent). If the taxon_oid cannot be used, the download will fail. **
+
+NOTE: For downloading gbk files, there is a limit to the number of scaffolds that can be downloaded at once. Currently that number is 100. Over that number and the file must be downloaded manually (sent to an email). I don't think there is a good way for this program to get around this as it is a server-side check. I've tried :).
+
+To download IMG data the command is like one of the following:
+
+
+	python jgi_interface.py -l my_login_info -ids 3300002741 -names my_awesome_isolate -id_type taxon_oid -v DEBUG -r -g gbk
+
+	python jgi_interface.py -l my_login_info -ids my_list_of_taxon_oids -names my_awesome_names -id_type taxon_oid -v DEBUG -r -g cog
+
+	python jgi_interface.py -l my_login_info -ids my_list_of_proj_ids -id_type proj_id -v DEBUG -r -g ko
+
+\|/
+ |
+
+Recipe3: Downloading JGI Data
+
+** To access JGI data, a proj_id is required. You may supply this program with a taxon_oid (from IMG) and an attempt will be made to look up the proj_id but it is not always successful (JGI changes the format of this stuff when it does updates so formats are not always consistent). If the proj_id cannot be used, the download will fail. **
+
+To get data from IMG, you must specify the "path" to the data in the form:
+
+-g 'path_regex|file_regex'
+
+	python jgi_interface.py -l my_login_info -ids 1032019 -names MF_Col_mLB_r1 -id_type proj_id -v DEBUG -g "IMG Data|.*.(tar.gz)"
+
+	python jgi_interface.py -l ~/jgi_login -ids 1048570 -id_type proj_id -g "Sequencing QC.*|.*"
+
+	# this is an example of digging down 2 directories before the data
+	python jgi_interface.py -l ~/jgi_login -ids 1048570 -id_type proj_id -g "QC and Genome Assembly/AP.*|.*README.*"
+
+	python jgi_interface.py -l ~/jgi_login -ids FACS_ids -id_type proj_id -names FACS_names -g "Raw Data|8735.*.(fastq.gz)"
+
+\|/
+ | 
+
+Recipe 4: Creating an isolate database
+
+This is a specific use case where you want to download lots of data for lots of isolates on JGI/IMG and keep if all in an orderly fashion. This could be used to manage the data portion of our isolate collection. 
+
+For this, you will probably want to use a wrapper around the jgi_interface script that handles a lot of stuff behind the scenes.
+
+	ipython isolate_download_manager.py
+
+From here, useage is interactive. There is really no non-interative use for this program. Plan ahead when downloading large/lots of files because a terminal must be open the whole time. If you lose connection, you can pick up where you left off but the file that was being downloaded when connection was lost may be corrupted or truncated or blank and the program will see the file name and think it is already downloaded.
+
+
+CHECKM GENOME EVALUATION
+========================
+
+CheckM requires some data files that are currently stored in:
+
+/proj/dangl_lab/apps/CheckM_data
+
+If you update CheckM you will likely need to give the new version this path. 
+
+
+Recipe1: Running CheckM
+
+This requires Python2 and the CheckM module
+
+CheckM uses a lot of memory and also many threads so run it on a whole node.
+
+This command runs checkm on all the files in the all_quality_bins directory with the extension ".fasta" and stores the results in the checkm directory (makes it if it doesn't already exist)
+
+Also writes completeness and comtamination and othere stats to the checkm_out.tsv file.
+
+	bsub -o checkm/checkm.out -e checkm/checkm.err -q week -n 7,8 -R 'span[hosts=1]' checkm lineage_wf --tab_table -f checkm/checkm_out.tsv -x fasta -t 8 ./all_quality_bins/ ./checkm/
+
+
+\|/
+ |
+
+Recipe2: Making plots
+
+This uses python2
+
+Right now, the only plot I really make is the Completeness and Contamination bar plot.
+
+This command makes the plot sorted by Completeness and stores it as test.comp_and_cont.png after removing bins with less than 40 completion of greater than 100 contamination.
+
+	python checkm_plot_comp_and_cont.py -sort -checkm checkm_out.tsv -base test -trim_comp 40 -trim_cont 100
+
+\|/
+ |
+
+Recipe3: Making a tree
+
+Get a list of your genome names:
+	awk '{print $1}' checkm_out.tsv > genome_bin_names.txt
+
+You must now remove the header line. This won't work if your genome names have spaces (which they shouldn't!!)
+
+Run this python2 script to trim CheckM's tree with all the reference genomes down to just your genomes. For an unknown reason, this script seems to make corrupted trees some of the time. Archaeopteryx is the only thing I've found that can view all trees made using this.
+
+	python prune_phylo_tree.py -tree checkm_base/storage/tree/concatenated.tre -format newick -nodes genome_bin_names.txt -out checkm_tree_with_only_genome_bins.tre
+
+View this tree using Archaeopteryx (I got an error when I tried to open it about parentheses in node names. Not sure what this is about but it still seems to display fine.
+
+	java -cp /proj/dangl_lab/apps/forester_1038.jar org.forester.archaeopteryx.Archaeopteryx
+
+
+GENOME COMPARISON AND SIMILARITY
+================================
+
+To compare genomes, I use Alignment Fraction and Average Nucleotide Identity.
+
+The average workflow is as follows:
+
+1. Break query up into pieces of ~1000 (to simulate gene length chunks)
+2. Map pieces to all references using bbmap_pacbio.sh (for long reads)
+3. Find pieces that map at 70+% identity over 70+% of the length of the piece
+4. AF is the length of the found pieces / total length of the query
+5. ANI is the sum(piece identity * piece length) / total length of the query
+
+This method is based (slightly loosely) on the paper 'Microbial species delineation using whole genome sequences' by Varghese et al 
+http://nar.oxfordjournals.org/content/early/2015/07/06/nar.gkv657.full
+
+Recipe1: Calculating AF and ANI for a bunch of fastas
+
+Script ran with Py3k
+
+This code parallelizes the work across 10 nodes at a time using 8 cpus per node and writes matrices with ANI and AF. To run on the local node only, put -nodes 0
+
+BBmap currently has a threadding problem and will thread to as many nodes as allowed so you MUST run this with all the cpus on an LSF node or your job will be suspended!
+
+	module add bbmap
+	bsub -o lsf.out -e lsf.err python calculate_ANI_and_AF.py -i *.fna -cpus 8 -nodes 10 -prefix genome_comparison
+
+\|/
+ |
+
+Recipe2: Making a tree from the alignment fraction matrix
+
+Script ran with Python2
+
+	python build_tree_from_similarity_matrix.py -matr genome_comparison.AF.tab -alg nj -out genome_comparison.AF.tre -format newick
+
+
+PICRUST AND PLANT ASSOCIATED DATABASE
+=====================================
+
+This recipe section is for running PICRUSt using my python wrapper. For how to use PICRUSt from the command line, see their documentation. Trait tables for various plant associated databases as well as the default PICRUSt database can be found along with the PA_database files. 
+
+First, you must have the puppetcrust module installed. This can be downloaded from my GitHub https://github.com/hunter-cameron/puppetcrust.git
+
+You may already have it installed, to check, run:
+
+	python -c "import puppetcrust"
+
+If that runs without error, you have it installed
+
+OTHERWISE::
+
+Download it from GitHub and then cd into the directory and run:
+	python setup.py develop 
+	
+OR run:
+	python setup.py install
+
+Develop mode allows you to edit the module files and have the changes reflected in the library
+
+Recipe1: Running PICRUSt -- predict traits, then predict metagenome
+
+	bsub -o out -e err python puppetcrust_dir/scripts/run_picrust.py -wf both -tree all_my_seqs.tre -traits database.traits.tab -marker_counts 16S_gene_counts.txt -otu_table my_otus.biom -out output_dir
+
+This command can also be ran with -wf [predict_traits, predict_metagenome] to do one workflow or the other. Options required will change depending on what wf you want to run.
+
+You can find some sample files in the puppetcrust_dir/samples directory.
+
+\|/
+ |
+
+Recipe2: Updating the Plant Associated Database/Making a custom database
+
+	python puppetcrust_dir/scripts/create_picrust_database.py -fasta markers.fasta other_markers.fasta -traits traits.tab other_traits.tab -prefix arab_pop_pa_db
+
+See the samples directory for an example of what a trait table and a markers.fasta looks like. Typically, the trait table I use is derrived from IMG's KO file that can be downloaded using my jgi_interface.py script
+
+It is possible to convert that file directly to a trait table using the script:
+
+	python puppetcrust_dir/scripts/jgi_KOs_to_trait_table.py -ko KOs1.txt KOs2.txt -ko_metadata PA_database/picrust_data/ko_metadata_from_htext.tab
+
+The ko_metadata file is parsed from the KEGG website and has 3 columns [KO, Description, Pathways]
+Pathways are separated by "|". 
+
+\|/
+ |
+
+Recipe3: Collapsing KOs by category
+
+	python puppetcrust_dir/scripts/collapse_ko_by_function.py -table predicted_metagenome.tab -ko_metadata PA_database/picrust_data/ko_metadata_from_htext.tab -orient "rows" -out predicted_metagenome.groupby_function.tab
+
+
+FINDING CONSERVED PRIMERS (MOSTLY JUST FOR OMRI)
+================================================
+
+It is unfortunate I even have to write this. I have a script that is partly (mostly?) developed that looks for 20-mers and stores them in a database and then queries this database for kmers that would be appropriate to use as primers. 
+
+The script is stored at job_scripts/omri/compare_fuzzy_kmers.py on my GitHub.
+
+It will need to be fixed and tested on a proper test case before it can be used. Unfortunately, though the code is somewhat documented, it contains a bunch of legacy code still in the file from previous versions. It will be difficult for external people to look through it to fix it. I may come back and try to work on it but I'm not sure if I will have time. 
+
+In the meantime, here is a crappy (in comparison) but working (probably) pipeline to find conserved kmers.
+
+(This pipeline requires py3k)
+
+1. Get conserved genes
+
+One way to do this is to run get_homologues and take the genes that are in the core set.
+
+The following script may help with that:
+
+	python homolog_list_to_fna.py
+
+The -h command should give enough help to let you use the script. You need to pass this script a list of core clusters.
+
+
+2. Align conserved genes using whatever aligner you like provided it outputs alignments in FASTA format.
+
+
+3. Find conserved primers:
+
+	python job_scripts/omri/find_potential_amplicons.py -msa *.msa -amp_len 450
+
+This script will output a potential_amplicons.fasta file that has each potential amplicon with the number of bp different between the two closest matches and an entropy store.
+
+4. Get the sequence from each genome for the selected amplicon (from potential_amplicons.fasta)
+
+In the potential amplicons you can find the start and end of the region from right after the amplicon name. It takes the form of "start..end"
+
+The msa file is in the amplicon name. 
+
+Put that into the following script:
+
+	python job_scripts/omri/get_region_of_alignment.py
+
+This will write the sequences out to stdout. 
+
+
+METAGENOMIC BINNING
+===================
+
+This is the final binning pipeline I used to the plate scrapes but I suspect that it could be applied to any metagenome.
+
+1. Assemble samples together to get a metagenomic assembly (this was done by JGI using megaHIT for the platescrapes, another assembler to consider is Ray-meta)
+
+2. Map the reads from each sample back to the assembly and sort and index the bam file
+
+	** Command for one sample **
+
+	bsub -o mapping/MF_Col_mMF_r1.out -e mapping/MF_Col_mMF_r1.err -n 8 -R 'span[hosts=1]' -M 40 "bbmap.sh ref=MF_Col.combined_PS.fasta in=MF_Col_mMF_r1.raw.fastq.gz out=mapping/MF_Col_mMF_r1.bam nodisk sam=1.3 threads=8 ambiguous=random -Xmx39G; samtools sort -o mapping/MF_Col_mMF_r1.sorted.bam mapping/MF_Col_mMF_r1.bam; samtools index mapping/MF_Col_mMF_r1.sorted.bam"
+
+3. Generate metaBAT depth files
+
+	bsub -o step1_first_binning/depth.out -e step1_first_binning/depth.err -J MF_Col /proj/dangl_lab/apps/metaBAT/berkeleylab-metabat-a5bd131528c3/jgi_summarize_bam_contig_depths --outputDepth step1_first_binning/MF_Col.depth.txt --pairedContigs step1_first_binning/MF_Col.paired.txt mapping/*.bam;
+
+4. Run metaBAT with very lenient params to bin as much as possible
+
+	bsub -o step1_first_binning/sensitive_bins/metabat.out -e step1_first_binning/sensitive_bins/metabat.err -n 5 -R 'span[hosts=1]' -M 30 /proj/dangl_lab/apps/metaBAT/berkeleylab-metabat-a5bd131528c3/metabat -i MF_Col.combined_PS.fasta -o step1_first_binning/sensitive_bins/MF_Col -a step1_first_binning/MF_Col.depth.txt -p step1_first_binning/MF_Col.paired.txt --verysensitive --numThreads 4 --fuzzy --minContig 1500;
+
+5. Run CheckM to assess initial quality
+
+	bsub -o checkm/checkm.out -e checkm/checkm.err -n 8 -R 'span[hosts=1]' checkm lineage_wf --tab_table -f checkm/checkm_out.tsv -x fa -t 8 sensitive_bins/ ./sensitive_checkm
+
+6. Select bins with >= 70% completion
+
+	# sort by completeness
+	python ~/scripts/python/print_cols.py -file checkm_out.tsv -indx 0,11,12 | sort -rgk 2 > sorted_comp_and_cont.txt
+
+	# select bin names manually > bins_with_gte70_completion.txt
+
+	# run the following command to get a list of contigs from each bin (run from binned fasta dir)
+	while read bin; do grep ">" $bin.fa | sed 's/>//g' > ../../step2_reassembly/bins_to_reassemble/$bin.txt; done < ../sensitive_checkm/bins_with_gte70_completion.txt
+
+
+7. Get reads that mapped to each bin
+
+	# get a SAM sorted by read name
+	for file in *.bam; do prefix=${file/.sorted*/}; bsub -o name_sort.out -e name_sort.err samtools sort -n -o $prefix.name_sorted.sam $file; done
+
+	# run my read extractor
+	source activate py3k
+	bsub -o extract_reads.out -e extract_reads.err python extract_reads_from_SAM.py -contigs ../bins_to_reassemble/* -samfiles ../../mapping/*.name_sorted.sam -out_dir fastq
+
+8. Assemble fastq reads from bins using SPAdes
+
+	** Command submitted to LSF using a variable amount of processors and memory
+	module add spades
+	spades.py -o assemblies/$genome_bin/ -k 21,33,55,77,101,127 --threads 8 --careful --pe1-12 fastq/$file
+
+	** Checked if new assemblies better than old using compare_reassemblies.py **
+
+9. Ran CheckM and selected bins with >= 10% contamination for manual refinement
+
+	** Used same command style as in step 5 with just a different input fasta directory
+	** Bin names selected manually and fastas corresponding to them moved into new directory for manual curation
+	
+10. Mapped the reads from step 8 to the assemblies from step 9 and generated covstats file
+
+	# example on one mapping
+	bbmap.sh ref=CL_Col.1.new.fasta in=../../step2_reassembly/fastq/CL_Col.1.fastq out=../CL_Col/mapping/CL_Col.1.new.bam covstats=../CL_Col/mapping/CL_Col.1.new.covstats.txt nodisk sam=1.3 threads=8 ambiguous=random -Xmx39G
+
+11. Manually bin using gbtools (must be installed in R)
+
+	# run my script for rapid binning (must be ran from the directory all the covstats files are in)
+	bash /proj/dangl_lab/apps/anaconda/Bioinformatics/bash/batch_manual_binning.sh $output_dir *covstats.txt
+
+	# This will make a directory for each bin that is self contained. The Rscript inside can be re-ran to rebin.
+
+	# make fasta file using the bin files
+	for file in */*bin*.txt; do echo $file; prefix=${file/\/*/}; echo $prefix; fasta=${file/.txt/.fasta}; perl /proj/dangl_lab/bin/fasta_get_seqs_by_id.pl ../bins_to_curate/$prefix.fasta $file $fasta; done
+
+12. Ran CheckM to checkm that manual binning is better than original.
+	
+	# link all the fastas to a single dir then run CheckM like above
+	ln -s ../CL_Col.*/*.bin*.fasta .
+
+13. Repeat 11 and 12 rebinning poor bins by running the Rscript inside the bin directory and running CheckM until they are all quality bins or until you admit defeat :).
+
+14. Select good bins from step 8 (the reassembled bins that didn't need manual refinement) and from the end of step 13.
+
+	# subset the checkm file to select only good bins
+	python checkm_select_bins.py -checkm checkm_out.tsv -completeness 70 -contamination 10 -out quality_70_10_bins.tsv
+
+	# cp the good bins to the quality dir
+	for bin in $(awk {'print $1'} ../lineage_wf/quality_70_10_bins.tsv); do cp $bin.fasta ../../../../../step4_final_bins/CL_Col/all_quality_bins/; done
+	
+
+MYPYLI MODULES OF INTEREST
+==========================
+
+I have a custom python library mypyli (MY PYthon LIbrary) that might have modules that are useful for people who intend to develop their own python scripts. 
+
+I'll outline some of the more interesting ones here. Perhaps there are actual recipes to come.
+
+I recommend playing around with these in Ipython before trying to incorporate them into code.
+
+Recipe: plotmaster
+
+Plotmaster is a library that wraps around matplotlib to make graphs that I find myself wanting to use a lot. There are not many options here yet and the best way to see what is going on is to look at the code (a.k.a there's no documentation). However, the plots this module makes are generally good, in part thanks to the rcParams lines in the code (I recommend that everyone adds those lines to any python program that plots)
+
+\|/
+ |
+
+Recipe1: parallelizer
+
+This module is like the multiprocessing module except instead of parallelizing across multiple processes, this module parallelizes across multiple nodes on the LSF cluster. This is essentially a low-grade MPI processing suite that can be used from python with no need to really change existing code. Pretty much any function can be split across the cluster as is.
+
+##### <==== BEGIN SAMPLE CODE ====>
+def test_function(myarg):
+	cwd = os.getcwd()
+	str_to_return "Current working dir is {}. myarg is {}".format(cwd, myarg")
+	print(str_to_return, file=sys.stderr)
+
+	return str_to_return
+
+
+from mypyli import parallelizer
+
+# initialize a parallel launcher with whatever imports the function will need
+p_launcher = parallelizer.Parallelizer(test_function, num_nodes, num_cpus_per_node, imports=["sys", "os"], job_prefix="my_job")
+
+iter1_args = {'myarg': "this will go in the 'myarg' argument for the test function"}
+
+parallel_id = p_launcher.run(iter1_args)
+
+# this will wait for the results for this job
+# the idea is the launch all your jobs and then wait for the results, that way all the jobs are running while you wait for the first set of results.
+result = p_launcher.get_results(parallel_id, wait=True)
+
+
+##### <==== END SAMPLE CODE ====>
+
+Recipe2: taxtree
+
+This module works with taxstrings and NCBI taxonomy ids. It builds the entire NCBI taxonomy tree and uses that to lookup any node. If you run this module as a python program, it will give you options for dumping a tree to load. To use this module, you must load this tree and then use the tree object to do queries. 
+
+Recipe3: isolatedb
+
+This module is to be used to quick conversions between fields in an isolate database made by the isolate_database_manager.py script. The isolate database to use is hard coded in the module. Right now, it points to the one in new_isolates that is currently keeping track of all our isolate data. 
+
+I'll typically use this script to convert from taxon_oids to freezer_ids or organism_name before making trees or plots. 
+
+Recipe4: samparser
+
+This module parses a SAM file. If you use bbmap's 1.3 CIGAR format, this module can report percent identity and such. The calculate_ANI_and_AF.py script uses this module to parse sam results. 
