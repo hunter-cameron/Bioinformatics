@@ -1388,6 +1388,18 @@ def arg_type_get(arg):
         raise
         #raise argparse.ArgumentTypeError("Error processing the --get argument.")
 
+def check_args(args):
+    """ Checks args and returns errors if they are incompatible """
+
+    if not args.ids and not args.download:
+        raise ValueError("No ids nor path to download. Unsure what to do.")
+
+    if args.ids:
+        if not args.id_type:
+            raise ValueError("Must specify a -id_type for your ids.")
+
+
+
 if __name__ == "__main__":
 
     os.nice(20)     # give this program lowest priority to give up CPU to others while downloads are going on
@@ -1496,6 +1508,8 @@ for interactive python usage
     
    
     args = parser.parse_args()
+
+    check_args(args)
 
     # set the logging level
     logging.basicConfig(level=args.v)
