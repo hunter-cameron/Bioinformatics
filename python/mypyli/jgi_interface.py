@@ -837,7 +837,12 @@ class JGIOrganism(object):
 
         xml = self.interface.session.get(link).text
 
-        root = etree.fromstring(xml)
+        try:
+            root = etree.fromstring(xml)
+        except Exception as e:
+            LOG.warning("Parsing the content of the file found on the sever failed. Format was supposed to be XML but likely is not. Content of the file can be printed using -v DEBUG option.")
+            LOG.debug("\n<<------------BEGIN XML FILE\n" + xml + "<<------------END XML")
+            raise PortalError("Looking up the XML for the data tree for JGI failed. This may be a PortalError or it may really be an AccessDenied error.")
 
         # little sanity check to make sure reading the XML format expected
         assert root.tag == "organismDownloads"
